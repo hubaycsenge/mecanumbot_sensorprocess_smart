@@ -42,7 +42,7 @@ class PersonFusionNode(Node):
         # Subscribers
         self.scan_sub = self.create_subscription(
             LaserScan,
-            '/scan', # Assuming standard topic, frame_id: mecanumbot/scan
+            'scan', # Assuming standard topic, frame_id: mecanumbot/scan
             self.scan_callback,
             10
         )
