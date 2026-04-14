@@ -1,9 +1,12 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import CompressedImage, LaserScan
 from ament_index_python.packages import get_package_share_directory 
 from std_msgs.msg import String
 from cv_bridge import CvBridge
+from tf2_ros import TransformListener, Buffer
+from geometry_msgs.msg import PointStamped
 import torch
 import cv2
 import numpy as np
@@ -39,18 +42,29 @@ class PersonFusionNode(Node):
         # State variables
         self.latest_scan = None
 
+        # TF2 for frame transformations
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        # QoS profile for sensor data (BEST_EFFORT matches lidar & camera publishers)
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+
         # Subscribers
         self.scan_sub = self.create_subscription(
             LaserScan,
             'scan', # Assuming standard topic, frame_id: mecanumbot/scan
             self.scan_callback,
-            10
+            sensor_qos
         )
         self.image_sub = self.create_subscription(
             CompressedImage,
             '/camera/image_raw/compressed', # frame_id: mecanumbot/head_joint
             self.image_callback,
-            10
+            sensor_qos
         )
 
         # Publisher
@@ -128,12 +142,44 @@ class PersonFusionNode(Node):
                 else:
                     avg_distance = -1.0
 
+                # Calculate position in robot frame (distance and angle from lidar)
+                robot_x = avg_distance * math.cos(angle_left + (angle_right - angle_left) / 2.0)
+                robot_y = avg_distance * math.sin(angle_left + (angle_right - angle_left) / 2.0)
+
+                # Try to transform to map frame
+                map_position = None
+                try:
+                    # Create a point in the robot's scan frame
+                    point_stamped = PointStamped()
+                    point_stamped.header.frame_id = scan.header.frame_id
+                    point_stamped.header.stamp = scan.header.stamp
+                    point_stamped.point.x = robot_x
+                    point_stamped.point.y = robot_y
+                    point_stamped.point.z = 0.0
+
+                    # Transform to map frame
+                    transformed = self.tf_buffer.transform(point_stamped, 'map', timeout=rclpy.duration.Duration(seconds=0.1))
+                    map_position = {
+                        'x': float(transformed.point.x),
+                        'y': float(transformed.point.y),
+                        'z': float(transformed.point.z)
+                    }
+                except Exception as e:
+                    self.get_logger().warn(f"Could not transform to map frame: {e}")
+
                 # Append to our list
-                detected_people.append({
+                person_data = {
                     'midline_x': float(midline_x),
                     'distance': float(avg_distance),
-                    'bounding_box': [float(x_min), float(x_max)]
-                })
+                    'bounding_box': [float(x_min), float(x_max)],
+                    'robot_frame': {
+                        'x': float(robot_x),
+                        'y': float(robot_y)
+                    }
+                }
+                if map_position:
+                    person_data['map_frame'] = map_position
+                detected_people.append(person_data)
 
         # 7. Broadcast the list of people found
         output_msg = String()
