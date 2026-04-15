@@ -1,14 +1,24 @@
+# Move these to line 1 and 2
+import torch
+try:
+    from ultralytics import YOLO
+except ImportError:
+    print("Please install ultralytics: pip install ultralytics")
+
+# Then import the rest
 import rclpy
+import cv2
+from cv_bridge import CvBridge
+# ...
+
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import CompressedImage, LaserScan
 from ament_index_python.packages import get_package_share_directory 
 from std_msgs.msg import String
-from cv_bridge import CvBridge
 from tf2_ros import TransformListener, Buffer
 from geometry_msgs.msg import PointStamped
-import torch
-import cv2
+
 import numpy as np
 import json
 import os
@@ -16,10 +26,7 @@ import os
 import math
 
 # Try importing ultralytics for YOLO
-try:
-    from ultralytics import YOLO
-except ImportError:
-    print("Please install ultralytics: pip install ultralytics")
+
 
 class PersonFusionNode(Node):
     def __init__(self):
