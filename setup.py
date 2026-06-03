@@ -31,6 +31,7 @@ setup(
         'console_scripts': [
             'mecanumbot_lidar_detect_people = mecanumbot_sensorprocess_smart.mecanumbot_lidar_detect_people:main',
             'mecanumbot_cam_detect_people = mecanumbot_sensorprocess_smart.mecanumbot_cam_detect_people:main',
+            'mecanumbot_detect_tennis = mecanumbot_sensorprocess_smart.mecanumbot_detect_tennis:main',
         ],
     },
 )

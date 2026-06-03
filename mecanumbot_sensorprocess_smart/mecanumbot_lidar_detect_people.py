@@ -31,6 +31,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---- 2. Dynamic Monkey-patch for torch.load ----
 _original_torch_load = torch.load
+np.int = int
+np.float = float
+np.bool = bool
 
 def processor_load(path, *args, **kwargs):
     return _original_torch_load(path, map_location=DEVICE)
@@ -131,7 +134,7 @@ class DrSpaamNode(Node):
         self.declare_parameter("weight_file", "dr_spaam_5_on_frog.pth")
         self.declare_parameter("conf_thresh", 0.45)
         self.declare_parameter("stride", 1)
-        self.declare_parameter("scan_topic", "scan")
+        self.declare_parameter("scan_topic", "/mecanumbot/scan")
         self.declare_parameter("detections_topic", "dets")
         self.declare_parameter("rviz_topic", "dets_marker")
         self.declare_parameter("leading_mode", True)
@@ -164,7 +167,6 @@ class DrSpaamNode(Node):
         self.detector = Detector(
             model_name="DR-SPAAM",
             ckpt_file=weight_path,
-            gpu=False,
             stride=self.stride
         )
         
@@ -180,14 +182,14 @@ class DrSpaamNode(Node):
         self.map_height = 0
 
         self.dets_pub = self.create_publisher(PoseArray, self.get_parameter("detections_topic").value, 10)
-        self.rviz_pub = self.create_publisher(Marker, self.get_parameter("rviz_topic").value, 10)
+        #self.rviz_pub = self.create_publisher(Marker, self.get_parameter("rviz_topic").value, 10)
         
         if self.leading_mode:
-            self.subject_pub = self.create_publisher(PoseStamped, "subject_pose", 10)
+            self.subject_pub = self.create_publisher(PoseStamped, 'subject_pose', 10)
 
         self.scan_sub = self.create_subscription(
             LaserScan,
-            'scan',
+            self.get_parameter("scan_topic").value,
             self.scan_callback,
             qos_profile_sensor_data
         )
@@ -197,7 +199,7 @@ class DrSpaamNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             history=HistoryPolicy.KEEP_LAST
         )
-        self.map_sub = self.create_subscription(OccupancyGrid, '/keepout_filter_mask', self.map_callback, map_qos)
+        self.map_sub = self.create_subscription(OccupancyGrid, 'keepout_filter_mask', self.map_callback, map_qos)
 
         self.get_logger().info("DR-SPAAM ROS2 detector node started.")
 
@@ -292,13 +294,14 @@ class DrSpaamNode(Node):
 
         scan = np.array(msg.ranges)
         scan = preprocess_lidar(scan, target_len=expected_points, max_range=10.0)
+        self.get_logger().info(f"Received scan with {len(scan)} points (preprocessed to {expected_points}).")
         dets_xy, dets_cls, _ = self.detector(scan)
-
+        self.get_logger().info(f"Raw detections: {dets_xy.shape[0]}, Confidences: {dets_cls.shape[0]}")
         conf_mask = (dets_cls >= self.conf_thresh).reshape(-1)
         dets_xy = dets_xy[conf_mask]
         dets_cls = dets_cls[conf_mask]
         dets_xy = -1 * dets_xy
-       
+        self.get_logger().info(f"Detections after confidence filter: {dets_xy.shape[0]}")
 
         # ----------------------------------------
         # --- NEW: Apply the Static Map Filter --
@@ -326,7 +329,7 @@ class DrSpaamNode(Node):
             
         marker_msg = self._dets_to_marker(tracked_xy) 
         marker_msg.header = msg.header
-        self.rviz_pub.publish(marker_msg)
+        #self.rviz_pub.publish(marker_msg)
 
     def _parse_subject_pose(self, dets_msg):
         ps_msg = Pose()

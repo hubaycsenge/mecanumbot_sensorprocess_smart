@@ -1,11 +1,10 @@
-# Move these to line 1 and 2
+
 import torch
 try:
     from ultralytics import YOLO
 except ImportError:
     print("Please install ultralytics: pip install ultralytics")
 
-# Then import the rest
 import rclpy
 import cv2
 from cv_bridge import CvBridge
@@ -13,11 +12,12 @@ from cv_bridge import CvBridge
 
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import CompressedImage, LaserScan
+from mecanumbot_msgs.msg import PersonKeypoints, PersonKeypointsArray
+from sensor_msgs.msg import CompressedImage
 from ament_index_python.packages import get_package_share_directory 
 from std_msgs.msg import String
 from tf2_ros import TransformListener, Buffer
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import Pose
 
 import numpy as np
 import json
@@ -25,24 +25,34 @@ import os
 
 import math
 
-# Try importing ultralytics for YOLO
 
 
-class PersonFusionNode(Node):
-    def __init__(self):
+
+class PersonDetectNode(Node):
+    def __init__(self,namespace=''):
         super().__init__('mecanumbot_cam_detect_people')
+        self.declare_parameters(
+        namespace=namespace,
+        parameters=[
+        ('camera_params.camera_width', 640.0),
+        ('camera_params.camera_height', 480.0),
+        ('camera_params.camera_fov', math.radians(62.2)),
+        ('img_process_params.weight_file', 'yolo26n-pose.pt')
+         ])
 
         # Parameters
 
-        self.camera_width = 640.0
-        self.camera_fov = math.radians(62.2) # Assume 60 degree horizontal FOV, adjust as needed
-        
+        self.camera_width = self.get_parameter('camera_params.camera_width').value
+        self.camera_fov = self.get_parameter('camera_params.camera_fov').value # Assume 60 degree horizontal FOV, adjust as needed
+
         self.bridge = CvBridge()
-        self.weight_file = 'yolov8n.pt' # Ensure this file is in the 'models' directory of the package
+        self.weight_file = self.get_parameter('img_process_params.weight_file').value # Ensure this file is in the 'models' directory of the package
         pkg_share = get_package_share_directory('mecanumbot_sensorprocess_smart')
-        weight_path = os.path.join(pkg_share, 'models', self.weight_file)
+        resolved_namespace = self.get_namespace().strip('/')
+        self.namespace = resolved_namespace
+        #weight_path = os.path.join(pkg_share, 'models', self.weight_file)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.yolo_model = YOLO(weight_path) # Replace with your specific path if needed
+        self.yolo_model = YOLO(self.weight_file) # Replace with your specific path if needed
         self.yolo_model.to(self.device)
         
 
@@ -59,40 +69,30 @@ class PersonFusionNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
-
-        # Subscribers
-        self.scan_sub = self.create_subscription(
-            LaserScan,
-            'scan', # Assuming standard topic, frame_id: mecanumbot/scan
-            self.scan_callback,
-            sensor_qos
-        )
         self.image_sub = self.create_subscription(
             CompressedImage,
-            '/camera/image_raw/compressed', # frame_id: mecanumbot/head_joint
+            'camera/image_raw/compressed', # frame_id: mecanumbot/head_joint
             self.image_callback,
             sensor_qos
         )
 
         # Publisher
-        self.people_pub = self.create_publisher(String, '/detected_people', 10)
+        self.people_pub = self.create_publisher(String, 'cam_detected_people', 10)
+        self.people_raw_pub = self.create_publisher(PersonKeypointsArray, 'cam_raw_detections', 10)
 
-        self.get_logger().info("Person Fusion Node has started. Device: {}".format(self.device))
+        self.get_logger().info("Person Detect Node has started. Device: {}".format(self.device))
 
     def scan_callback(self, msg):
         """Store the latest scan to use when an image arrives."""
         self.latest_scan = msg
-
-    def get_angle_from_x_pixel(self, x_pixel):
-        """
-        Maps an X pixel coordinate to a horizontal angle (in radians).
-        ROS standard: forward is 0, left is positive, right is negative.
-        """
-        # Center of image is 0 angle. Left of center is positive angle.
-        x_offset = (self.camera_width / 2.0) - x_pixel
-        angle = x_offset * (self.camera_fov / self.camera_width)
-        return angle
-
+    
+    def XYN_to_Pose(self, xyn):
+        msg = Pose()
+        msg.position.x = xyn[0]
+        msg.position.y = xyn[1]
+        msg.position.z = 0.0
+        return msg
+    
     def image_callback(self, msg):
         if self.latest_scan is None:
             self.get_logger().warn("Waiting for scan data...", throttle_duration_sec=2.0)
@@ -110,96 +110,41 @@ class PersonFusionNode(Node):
         results = self.yolo_model(cv_image, classes=[0], verbose=False) # class 0 is 'person'
         
         detected_people = []
-        scan = self.latest_scan
-
         for result in results:
-            boxes = result.boxes
-            for box in boxes:
-                # 3. Create boundaries on the width axis
-                # YOLO returns xyxy (x_min, y_min, x_max, y_max)
-                x_min, y_min, x_max, y_max = box.xyxy[0].cpu().numpy()
-                midline_x = (x_min + x_max) / 2.0
+            xyn = result.keypoints.xyn # Normalized keypoints (x, y in [0,1])
+            
+            person_msg = PersonKeypoints()
+            person_msg.nose = self.XYN_to_Pose(xyn[0]) # Nose keypoint
+            person_msg.left_eye = self.XYN_to_Pose(xyn[1]) # Left eye keypoint
+            person_msg.right_eye = self.XYN_to_Pose(xyn[2]) # Right eye keypoint
+            person_msg.left_ear = self.XYN_to_Pose(xyn[3]) # Left ear keypoint
+            person_msg.right_ear = self.XYN_to_Pose(xyn[4]) # Right ear keypoint
+            person_msg.left_shoulder = self.XYN_to_Pose(xyn[5]) # Left shoulder keypoint
+            person_msg.right_shoulder = self.XYN_to_Pose(xyn[6]) # Right shoulder keypoint
+            person_msg.left_elbow = self.XYN_to_Pose(xyn[7]) # Left elbow keypoint
+            person_msg.right_elbow = self.XYN_to_Pose(xyn[8]) # Right elbow keypoint
+            person_msg.left_wrist = self.XYN_to_Pose(xyn[9]) # Left wrist keypoint
+            person_msg.right_wrist = self.XYN_to_Pose(xyn[10]) # Right wrist keypoint
+            person_msg.left_hip = self.XYN_to_Pose(xyn[11]) # Left hip keypoint
+            person_msg.right_hip = self.XYN_to_Pose(xyn[12]) # Right hip keypoint
+            person_msg.left_knee = self.XYN_to_Pose(xyn[13]) # Left knee keypoint
+            person_msg.right_knee = self.XYN_to_Pose(xyn[14]) # Right knee keypoint
+            person_msg.left_ankle = self.XYN_to_Pose(xyn[15]) # Left ankle keypoint
+            person_msg.right_ankle = self.XYN_to_Pose(xyn[16]) # Right ankle keypoint
+            detected_people.append(person_msg)
+        out_msg = PersonKeypointsArray()
+        out_msg.header.stamp = self.get_clock().now().to_msg()
+        out_msg.header.frame_id = f'{self.namespace}/head_link'
+        out_msg.people = detected_people
+        self.people_raw_pub.publish(out_msg)
+        #self.people_pub.publish(out_msg)
+        #self.get_logger().info(f"Published {len(detected_people)} detected people.")
 
-                # 4. Map image width boundaries to LiDAR scan angles
-                # x_min is on the left, so it gives a positive (higher) angle
-                # x_max is on the right, so it gives a negative (lower) angle
-                angle_left = self.get_angle_from_x_pixel(x_min)
-                angle_right = self.get_angle_from_x_pixel(x_max)
-
-                # 5. Convert angles to scan indices
-                idx_left = int((angle_left - scan.angle_min) / scan.angle_increment)
-                idx_right = int((angle_right - scan.angle_min) / scan.angle_increment)
-
-                # Ensure indices are within bounds and order them correctly (min to max)
-                idx_start = max(0, min(idx_left, idx_right))
-                idx_end = min(len(scan.ranges) - 1, max(idx_left, idx_right))
-
-                # 6. Select points between boundaries and calculate average distance
-                if idx_start < idx_end:
-                    # Extract the slice of scan ranges
-                    target_ranges = scan.ranges[idx_start:idx_end]
-                    
-                    # Filter out inf and nan values (common in LiDAR data)
-                    valid_ranges = [r for r in target_ranges if scan.range_min < r < scan.range_max and not math.isinf(r) and not math.isnan(r)]
-                    
-                    if valid_ranges:
-                        avg_distance = sum(valid_ranges) / len(valid_ranges)
-                    else:
-                        avg_distance = -1.0 # -1 means no valid LiDAR returns in that bounding box
-                else:
-                    avg_distance = -1.0
-
-                # Calculate position in robot frame (distance and angle from lidar)
-                robot_x = avg_distance * math.cos(angle_left + (angle_right - angle_left) / 2.0)
-                robot_y = avg_distance * math.sin(angle_left + (angle_right - angle_left) / 2.0)
-
-                # Try to transform to map frame
-                map_position = None
-                try:
-                    # Create a point in the robot's scan frame
-                    point_stamped = PointStamped()
-                    point_stamped.header.frame_id = scan.header.frame_id
-                    point_stamped.header.stamp = scan.header.stamp
-                    point_stamped.point.x = robot_x
-                    point_stamped.point.y = robot_y
-                    point_stamped.point.z = 0.0
-
-                    # Transform to map frame
-                    transformed = self.tf_buffer.transform(point_stamped, 'map', timeout=rclpy.duration.Duration(seconds=0.1))
-                    map_position = {
-                        'x': float(transformed.point.x),
-                        'y': float(transformed.point.y),
-                        'z': float(transformed.point.z)
-                    }
-                except Exception as e:
-                    self.get_logger().warn(f"Could not transform to map frame: {e}")
-
-                # Append to our list
-                person_data = {
-                    'midline_x': float(midline_x),
-                    'distance': float(avg_distance),
-                    'bounding_box': [float(x_min), float(x_max)],
-                    'robot_frame': {
-                        'x': float(robot_x),
-                        'y': float(robot_y)
-                    }
-                }
-                if map_position:
-                    person_data['map_frame'] = map_position
-                detected_people.append(person_data)
-
-        # 7. Broadcast the list of people found
-        output_msg = String()
-        output_msg.data = json.dumps(detected_people)
-        self.people_pub.publish(output_msg)
-
-        # Optional: Log the output
-        if detected_people:
-            self.get_logger().info(f"Published {len(detected_people)} detected people.")
+            
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PersonFusionNode()
+    node = PersonDetectNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
