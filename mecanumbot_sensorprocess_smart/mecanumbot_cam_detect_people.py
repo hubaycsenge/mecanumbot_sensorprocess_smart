@@ -8,11 +8,14 @@ except ImportError:
 import rclpy
 import cv2
 from cv_bridge import CvBridge
+import numpy as np
 # ...
 
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy,DurabilityPolicy
+from sensor_msgs.msg import LaserScan
 from mecanumbot_msgs.msg import PersonKeypoints, PersonKeypointsArray
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from sensor_msgs.msg import CompressedImage
 from ament_index_python.packages import get_package_share_directory 
 from std_msgs.msg import String
@@ -20,6 +23,7 @@ from tf2_ros import TransformListener, Buffer
 from geometry_msgs.msg import Pose
 
 import numpy as np
+import transforms3d as t3d
 import json
 import os
 
@@ -69,6 +73,13 @@ class PersonDetectNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
+        qos_profile = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST
+        )
+
         self.image_sub = self.create_subscription(
             CompressedImage,
             'camera/image_raw/compressed', # frame_id: mecanumbot/head_joint
@@ -76,15 +87,30 @@ class PersonDetectNode(Node):
             sensor_qos
         )
 
+        self.robot_subscriber =self.create_subscription(
+            PoseWithCovarianceStamped,
+            "/amcl_pose",
+            self.amcl_callback,
+            qos_profile
+        )
         # Publisher
-        self.people_pub = self.create_publisher(String, 'cam_detected_people', 10)
-        self.people_raw_pub = self.create_publisher(PersonKeypointsArray, 'cam_raw_detections', 10)
-
+        self.people_pub = self.create_publisher(String, 'cam_people_detections', 10)
         self.get_logger().info("Person Detect Node has started. Device: {}".format(self.device))
+        
 
-    def scan_callback(self, msg):
-        """Store the latest scan to use when an image arrives."""
-        self.latest_scan = msg
+    def amcl_callback(self, msg):
+        self.robot_pose = msg.pose.pose
+        self.robot_orientation_quat = self.robot_pose.orientation
+        self.robot_orientation_euler = t3d.euler.quat2euler([
+            self.robot_orientation_quat.x,
+            self.robot_orientation_quat.y,
+            self.robot_orientation_quat.z,
+            self.robot_orientation_quat.w
+        ])
+
+        self.camera_left_yaw = self.robot_orientation_euler[2] + self.camera_fov / 2
+        self.camera_right_yaw = self.robot_orientation_euler[2] - self.camera_fov / 2
+
     
     def XYN_to_Pose(self, xyn):
         msg = Pose()
@@ -93,6 +119,11 @@ class PersonDetectNode(Node):
         msg.position.z = 0.0
         return msg
     
+    def cam_to_angle(self,X):
+        X_inv = 1 - X # camera pixel indexing direction is opposite of robot frame dir
+        angle = (1-X_inv) * self.camera_right_yaw + X_inv * self.camera_left_yaw
+        return angle
+
     def image_callback(self, msg):
         if self.latest_scan is None:
             self.get_logger().warn("Waiting for scan data...", throttle_duration_sec=2.0)
@@ -110,28 +141,36 @@ class PersonDetectNode(Node):
         results = self.yolo_model(cv_image, classes=[0], verbose=False) # class 0 is 'person'
         
         detected_people = []
+        detected_people_bounds = []
         for result in results:
             xyn = result.keypoints.xyn # Normalized keypoints (x, y in [0,1])
             
             person_msg = PersonKeypoints()
-            person_msg.nose = self.XYN_to_Pose(xyn[0]) # Nose keypoint
-            person_msg.left_eye = self.XYN_to_Pose(xyn[1]) # Left eye keypoint
-            person_msg.right_eye = self.XYN_to_Pose(xyn[2]) # Right eye keypoint
-            person_msg.left_ear = self.XYN_to_Pose(xyn[3]) # Left ear keypoint
-            person_msg.right_ear = self.XYN_to_Pose(xyn[4]) # Right ear keypoint
-            person_msg.left_shoulder = self.XYN_to_Pose(xyn[5]) # Left shoulder keypoint
-            person_msg.right_shoulder = self.XYN_to_Pose(xyn[6]) # Right shoulder keypoint
-            person_msg.left_elbow = self.XYN_to_Pose(xyn[7]) # Left elbow keypoint
-            person_msg.right_elbow = self.XYN_to_Pose(xyn[8]) # Right elbow keypoint
-            person_msg.left_wrist = self.XYN_to_Pose(xyn[9]) # Left wrist keypoint
-            person_msg.right_wrist = self.XYN_to_Pose(xyn[10]) # Right wrist keypoint
-            person_msg.left_hip = self.XYN_to_Pose(xyn[11]) # Left hip keypoint
-            person_msg.right_hip = self.XYN_to_Pose(xyn[12]) # Right hip keypoint
-            person_msg.left_knee = self.XYN_to_Pose(xyn[13]) # Left knee keypoint
-            person_msg.right_knee = self.XYN_to_Pose(xyn[14]) # Right knee keypoint
-            person_msg.left_ankle = self.XYN_to_Pose(xyn[15]) # Left ankle keypoint
-            person_msg.right_ankle = self.XYN_to_Pose(xyn[16]) # Right ankle keypoint
-            detected_people.append(person_msg)
+            person_msg.keypoints.nose = self.XYN_to_Pose(xyn[0]) # Nose keypoint
+            person_msg.keypoints.left_eye = self.XYN_to_Pose(xyn[1]) # Left eye keypoint
+            person_msg.keypoints.right_eye = self.XYN_to_Pose(xyn[2]) # Right eye keypoint
+            person_msg.keypoints.left_ear = self.XYN_to_Pose(xyn[3]) # Left ear keypoint
+            person_msg.keypoints.right_ear = self.XYN_to_Pose(xyn[4]) # Right ear keypoint
+            person_msg.keypoints.left_shoulder = self.XYN_to_Pose(xyn[5]) # Left shoulder keypoint
+            person_msg.keypoints.right_shoulder = self.XYN_to_Pose(xyn[6]) # Right shoulder keypoint
+            person_msg.keypoints.left_elbow = self.XYN_to_Pose(xyn[7]) # Left elbow keypoint
+            person_msg.keypoints.right_elbow = self.XYN_to_Pose(xyn[8]) # Right elbow keypoint
+            person_msg.keypoints.left_wrist = self.XYN_to_Pose(xyn[9]) # Left wrist keypoint
+            person_msg.keypoints.right_wrist = self.XYN_to_Pose(xyn[10]) # Right wrist keypoint
+            person_msg.keypoints.left_hip = self.XYN_to_Pose(xyn[11]) # Left hip keypoint
+            person_msg.keypoints.right_hip = self.XYN_to_Pose(xyn[12]) # Right hip keypoint
+            person_msg.keypoints.left_knee = self.XYN_to_Pose(xyn[13]) # Left knee keypoint
+            person_msg.keypoints.right_knee = self.XYN_to_Pose(xyn[14]) # Right knee keypoint
+            person_msg.keypoints.left_ankle = self.XYN_to_Pose(xyn[15]) # Left ankle keypoint
+            person_msg.keypoints.right_ankle = self.XYN_to_Pose(xyn[16]) # Right ankle keypoint
+            xyn_X = np.array(xyn)[:,0]
+            X_max, X_min = xyn_X.min(), xyn_X.max() # camera pixel indexing direction is opposite of robot frame dir, so max X is leftmost point and min X is rightmost point
+            X_min_angle = self.cam_to_angle(X_min)
+            X_max_angle = self.cam_to_angle(X_max)
+            person_msg.bound_angle_min = X_min_angle
+            person_msg.bound_angle_max = X_max_angle
+
+
         out_msg = PersonKeypointsArray()
         out_msg.header.stamp = self.get_clock().now().to_msg()
         out_msg.header.frame_id = f'{self.namespace}/head_link'

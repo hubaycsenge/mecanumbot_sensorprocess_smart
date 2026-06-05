@@ -89,38 +89,6 @@ class PersonLocateNode(Node):
         point.z = 0.0
         return point
 
-    def _transform_person(self, person, robot_yaw):
-        transformed_person = PersonKeypoints()
-        for field_name in (
-            'nose',
-            'left_eye',
-            'right_eye',
-            'left_ear',
-            'right_ear',
-            'left_shoulder',
-            'right_shoulder',
-            'left_elbow',
-            'right_elbow',
-            'left_wrist',
-            'right_wrist',
-            'left_hip',
-            'right_hip',
-            'left_knee',
-            'right_knee',
-            'left_ankle',
-            'right_ankle',
-        ):
-            setattr(transformed_person, field_name, self._keypoint_to_point32(getattr(person, field_name), robot_yaw))
-        return transformed_person
-
-    def _transform_cam_detections(self, msg):
-        robot_yaw = self._get_robot_yaw()
-
-        transformed_msg = PersonKeypointsArray()
-        transformed_msg.header = msg.header
-        transformed_msg.header.frame_id = self.robot_frame
-        transformed_msg.people = [self._transform_person(person, robot_yaw) for person in msg.people]
-        return transformed_msg
 
     def merge_detections(self):
         if self.cam_detections is None or self.laser_detections is None:
