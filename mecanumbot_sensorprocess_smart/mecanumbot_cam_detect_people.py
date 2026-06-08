@@ -52,11 +52,11 @@ class PersonDetectNode(Node):
         self.bridge = CvBridge()
         self.weight_file = self.get_parameter('img_process_params.weight_file').value # Ensure this file is in the 'models' directory of the package
         pkg_share = get_package_share_directory('mecanumbot_sensorprocess_smart')
+        weight_path = os.path.join(pkg_share, 'models', self.weight_file)
         resolved_namespace = self.get_namespace().strip('/')
         self.namespace = resolved_namespace
-        #weight_path = os.path.join(pkg_share, 'models', self.weight_file)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.yolo_model = YOLO(self.weight_file) # Replace with your specific path if needed
+        self.yolo_model = YOLO(weight_path) # Load pose weights from the package share directory
         self.yolo_model.to(self.device)
         
 

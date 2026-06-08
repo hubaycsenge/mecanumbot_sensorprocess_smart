@@ -20,5 +20,21 @@ def generate_launch_description():
             name="mecanumbot_lidar_detect_people",  # must match YAML top-level key
             output="screen",
             parameters=[yaml_file]
-)
+),
+        Node(
+            namespace="mecanumbot",
+            package="mecanumbot_sensorprocess_smart",
+            executable="mecanumbot_cam_detect_people",
+            name="mecanumbot_cam_detect_people",  # must match YAML top-level key
+            output="screen",
+            parameters=[yaml_file]
+        ),
+        Node(
+            namespace="mecanumbot",
+            package="mecanumbot_sensorprocess_smart",
+            executable="mecanumbot_locate_detections",
+            name="mecanumbot_locate_detections",  # must match YAML top-level key
+            output="screen",
+            parameters=[yaml_file]
+        )   
     ])

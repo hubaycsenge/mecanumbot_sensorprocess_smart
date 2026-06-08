@@ -27,39 +27,29 @@ class PersonLocateNode(Node):
         super().__init__('mecanumbot_locate_detections')
         resolved_namespace = self.get_namespace().strip('/')
         self.namespace = resolved_namespace
-        self.camera_fov = math.radians(60.0)
-        self.robot_frame = f'{self.namespace}/base_footprint' if self.namespace else 'base_footprint'
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-
-        qos_profile = QoSProfile(
-            depth=10,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            history=HistoryPolicy.KEEP_LAST
-        )
         
         # Publisher
         self.people_pub = self.create_publisher(PoseArray, 'people_fusion', 10)
         self.cam_people_sub = self.create_subscription(
             CamPersonDetectionArray,
             'cam_detected_people',
-            self.cam_people_callback,)
-        self.robot_pose_sub = self.create_subscription(
-            PoseWithCovarianceStamped,
-            'amcl_pose',
-            self.robot_pose_callback,)
+            self.cam_people_callback,
+            10)
         self.laser_people_sub = self.create_subscription(
             PoseArray,
             'lidar_detected_people',
-            self.lidar_people_callback,)
+            self.lidar_people_callback,
+            10)
         self.scan_sub = self.create_subscription(
             LaserScan,
             'scan',
-            self.scan_callback,)
+            self.scan_callback,
+            10)
         self.laser_detections = None
-        self.laser_angles
+        self.laser_angles = None
         self.cam_detections = None
         self.scan_data = None
         self.get_logger().info("Person Locate Node has started.")
@@ -75,6 +65,7 @@ class PersonLocateNode(Node):
                                                 )
         self.laser_detections = [tf2_geometry_msgs.do_transform_pose(pose, transform) for pose in msg.poses]
         self.laser_angles = {pose:math.atan2(pose.position.y, pose.position.x) for pose in self.laser_detections}
+        self.merge_detections()
 
     def scan_callback(self, msg):
         self.scan_data = msg
@@ -90,6 +81,7 @@ class PersonLocateNode(Node):
                 # Here you can create a new FusionPersonDetection message combining data from both sources
                 # and publish it as needed
         return pose_candidates[0] if pose_candidates else None #TODO: algorithm to select the best candidate if multiple matches are found
+    
     def extrap_from_raw_scan(self, person):
         if self.scan_data is None:
             return None
@@ -125,5 +117,17 @@ class PersonLocateNode(Node):
             
         # After merging, you can publish the combined results as needed.
 
-    def timer_callback(self):
-        self.merge_detections()
+    
+def main(args=None):
+    rclpy.init(args=args)
+    node = PersonLocateNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
