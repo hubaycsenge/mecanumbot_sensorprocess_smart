@@ -7,7 +7,7 @@ from cv_bridge import CvBridge
 
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from mecanumbot_msgs.msg import PersonKeypoints, CamPersonDetectionsArray, FusionPersonDetectionsArray, FusionPersonDetection
+from mecanumbot_msgs.msg import CamPersonDetectionArray
 from sensor_msgs.msg import CompressedImage, LaserScan
 from ament_index_python.packages import get_package_share_directory 
 from std_msgs.msg import String
@@ -42,9 +42,8 @@ class PersonLocateNode(Node):
         
         # Publisher
         self.people_pub = self.create_publisher(PoseArray, 'people_fusion', 10)
-        self.transformed_cam_pub = self.create_publisher(FusionPersonDetectionsArray, 'transformed_cam_detections', 10)
         self.cam_people_sub = self.create_subscription(
-            CamPersonDetectionsArray,
+            CamPersonDetectionArray,
             'cam_detected_people',
             self.cam_people_callback,)
         self.robot_pose_sub = self.create_subscription(
