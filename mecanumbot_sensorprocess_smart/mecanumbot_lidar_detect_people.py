@@ -16,8 +16,7 @@ from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 import tf2_geometry_msgs
 
-# --- NEW: Imported binary_dilation for efficient map inflation ---
-from scipy.interpolate import interp1d
+# Removed interp1d, using pure numpy indexing for speed
 from scipy.ndimage import median_filter, binary_dilation 
 from scipy.optimize import linear_sum_assignment
 from filterpy.kalman import KalmanFilter
@@ -90,7 +89,10 @@ class MultiObjectTracker:
         self.next_id = 0
 
     def update(self, detections):
-        predicted_positions = np.array([track.predict() for track in self.tracks])
+        if len(self.tracks) == 0:
+            predicted_positions = np.empty((0, 2))
+        else:
+            predicted_positions = np.array([track.predict() for track in self.tracks])
         
         matched_indices = []
         unmatched_detections = list(range(len(detections)))
@@ -115,10 +117,7 @@ class MultiObjectTracker:
 
         self.tracks = [t for t in self.tracks if t.time_since_update <= self.max_missed_frames]
 
-        valid_positions = []
-        for t in self.tracks:
-            if t.hits >= self.min_hits and t.has_moved:
-                valid_positions.append(t.kf.x[:2].reshape(-1))
+        valid_positions = [t.kf.x[:2].reshape(-1) for t in self.tracks if t.hits >= self.min_hits and t.has_moved]
 
         return np.array(valid_positions) if len(valid_positions) > 0 else np.empty((0, 2))
 
@@ -174,7 +173,7 @@ class DrSpaamNode(Node):
         
         # ---- Map State Data ----
         self.map_data = None
-        self.extended_map = None # --- NEW: Holds the inflated occupancy boolean mask ---
+        self.extended_map = None
         self.map_resolution = 0.05
         self.map_origin_x = 0.0
         self.map_origin_y = 0.0
@@ -182,7 +181,10 @@ class DrSpaamNode(Node):
         self.map_height = 0
 
         self.dets_pub = self.create_publisher(PoseArray, self.get_parameter("detections_topic").value, 10)
-        #self.rviz_pub = self.create_publisher(Marker, self.get_parameter("rviz_topic").value, 10)
+        
+        # Flag to track if rviz visualization is needed to avoid useless computation
+        self.publish_rviz = False 
+        # self.rviz_pub = self.create_publisher(Marker, self.get_parameter("rviz_topic").value, 10)
         
         if self.leading_mode:
             self.subject_pub = self.create_publisher(PoseStamped, 'subject_pose', 10)
@@ -214,49 +216,29 @@ class DrSpaamNode(Node):
         raw_map = np.array(msg.data, dtype=np.int8).reshape((self.map_height, self.map_width))
         self.map_data = raw_map
         
-        # --- NEW: Build the Obstacle Exclusion Zone ---
-        # Consider map cells with probability > 50 to be static obstacles
         obstacles = raw_map > 65
-        
-        # Calculate pixel radius for dilation
         radius_px = int(math.ceil(self.exclusion_radius / self.map_resolution))
         
         if radius_px > 0:
-            # Create a circular footprint to ensure accurate radial dilation
             y, x = np.ogrid[-radius_px:radius_px+1, -radius_px:radius_px+1]
             circular_footprint = x**2 + y**2 <= radius_px**2
-            
-            # Dilate the obstacles. Any True pixel in extended_map is a "no-detection zone"
             self.extended_map = binary_dilation(obstacles, structure=circular_footprint)
         else:
             self.extended_map = obstacles
 
         self.get_logger().info(f"Occupancy map received. Extended exclusion zone built (Radius: {radius_px}px).")
 
-    # --- NEW: Filter helper function ---
-    def _filter_detections_by_map(self, dets_xy, sensor_frame):
-        """Discards detections that fall within the inflated map occupancy."""
-        if self.extended_map is None:
-            self.get_logger().warn("Map not loaded yet. Skipping map-based filtering.", throttle_duration_sec=2.0)
-            return dets_xy 
+    def _filter_detections_by_map(self, dets_xy, transform):
+        """Vectorized filtering of detections that fall within the inflated map occupancy."""
+        if self.extended_map is None or transform is None or len(dets_xy) == 0:
+            return dets_xy
             
-        try:
-            # Get the real-time transform from map to the LiDAR sensor
-            t = self.tf_buffer.lookup_transform(
-                'map',
-                sensor_frame,
-                rclpy.time.Time()
-            )
-        except Exception as e:
-            self.get_logger().warn(f"TF error during map filtering: {e}", throttle_duration_sec=2.0)
-            return dets_xy # Safely return all detections if TF fails
-
         # Extract translation
-        tx = t.transform.translation.x
-        ty = t.transform.translation.y
+        tx = transform.transform.translation.x
+        ty = transform.transform.translation.y
         
         # Convert Quaternion to Yaw angle (Euler)
-        q = t.transform.rotation
+        q = transform.transform.rotation
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         yaw = math.atan2(siny_cosp, cosy_cosp)
@@ -264,29 +246,28 @@ class DrSpaamNode(Node):
         cos_yaw = math.cos(yaw)
         sin_yaw = math.sin(yaw)
 
-        valid_dets = []
-        for xy in dets_xy:
-            # Per your packing format: x is xy[1], y is xy[0]
-            local_x = xy[1]
-            local_y = xy[0]
-            
-            # 1. Transform local sensor coordinates into global map coordinates
-            global_x = tx + (local_x * cos_yaw) - (local_y * sin_yaw)
-            global_y = ty + (local_x * sin_yaw) + (local_y * cos_yaw)
-            
-            # 2. Convert physical global coordinates to map pixel indices
-            px = int((global_x - self.map_origin_x) / self.map_resolution)
-            py = int((global_y - self.map_origin_y) / self.map_resolution)
-            
-            # 3. Check if index is within map bounds and inside an exclusion zone
-            if 0 <= px < self.map_width and 0 <= py < self.map_height:
-                if self.extended_map[py, px]:
-                    continue # It's a wall/static object! Skip adding it.
-            
-            valid_dets.append(xy) # Keep it if it's safe
-            
-        return np.array(valid_dets) if len(valid_dets) > 0 else np.empty((0, 2))
-
+        # 1. Transform all local sensor coordinates into global map coordinates simultaneously
+        local_x = dets_xy[:, 1]
+        local_y = dets_xy[:, 0]
+        
+        global_x = tx + (local_x * cos_yaw) - (local_y * sin_yaw)
+        global_y = ty + (local_x * sin_yaw) + (local_y * cos_yaw)
+        
+        # 2. Convert physical global coordinates to map pixel indices
+        px = ((global_x - self.map_origin_x) / self.map_resolution).astype(int)
+        py = ((global_y - self.map_origin_y) / self.map_resolution).astype(int)
+        
+        # 3. Create a boolean mask to keep valid (safe) points
+        safe_mask = np.ones(len(dets_xy), dtype=bool)
+        
+        # Check if points are within map bounds
+        in_bounds_mask = (px >= 0) & (px < self.map_width) & (py >= 0) & (py < self.map_height)
+        
+        # Of the points that are in bounds, reject the ones inside the exclusion zone
+        # (~ inverts the map boolean so True means safe)
+        safe_mask[in_bounds_mask] = ~self.extended_map[py[in_bounds_mask], px[in_bounds_mask]]
+        
+        return dets_xy[safe_mask]
 
     def scan_callback(self, msg: LaserScan, expected_points=240):
         if not self.detector.laser_spec_set():
@@ -294,62 +275,64 @@ class DrSpaamNode(Node):
 
         scan = np.array(msg.ranges)
         scan = preprocess_lidar(scan, target_len=expected_points, max_range=10.0)
-        self.get_logger().info(f"Received scan with {len(scan)} points (preprocessed to {expected_points}).")
+        
         dets_xy, dets_cls, _ = self.detector(scan)
-        self.get_logger().info(f"Raw detections: {dets_xy.shape[0]}, Confidences: {dets_cls.shape[0]}")
+        
         conf_mask = (dets_cls >= self.conf_thresh).reshape(-1)
         dets_xy = dets_xy[conf_mask]
-        dets_cls = dets_cls[conf_mask]
         dets_xy = -1 * dets_xy
-        self.get_logger().info(f"Detections after confidence filter: {dets_xy.shape[0]}")
 
-        # ----------------------------------------
-        # --- NEW: Apply the Static Map Filter --
-        dets_xy = self._filter_detections_by_map(dets_xy, msg.header.frame_id)
-        #self.get_logger().info(f"Map: {self.map_data.shape if self.map_data is not None else 'None'}, {np.max(self.map_data) if self.map_data is not None else 'None'}, Dets after map filter: {dets_xy.shape[0]}")
-        # ----------------------------------------
+        # --- OPTIMIZATION: Fetch TF ONCE per frame ---
+        tf_map_to_sensor = None
+        if self.extended_map is not None or self.leading_mode:
+            try:
+                tf_map_to_sensor = self.tf_buffer.lookup_transform(
+                    'map',
+                    msg.header.frame_id,
+                    rclpy.time.Time()
+                )
+            except Exception as e:
+                self.get_logger().warn(f"TF error: {e}", throttle_duration_sec=2.0)
+
+        # Apply the static map filter using the fetched TF
+        dets_xy = self._filter_detections_by_map(dets_xy, tf_map_to_sensor)
 
         # Filter the raw network detections through the Kalman tracker
         tracked_xy = self.tracker.update(dets_xy)
 
-        # Publish PoseArray using the TRACKED positions, not the raw ones
+        # Publish PoseArray using the TRACKED positions
         dets_msg = self._dets_to_pose_array(tracked_xy) 
         dets_msg.header = msg.header
         self.dets_pub.publish(dets_msg)
 
-        if self.leading_mode and len(dets_msg.poses) > 0:
-            self.pose_out = self._parse_subject_pose(dets_msg)
+        # Use the already fetched TF to avoid a second lookup
+        if self.leading_mode and len(dets_msg.poses) > 0 and tf_map_to_sensor is not None:
+            self.pose_out = self._parse_subject_pose(dets_msg, tf_map_to_sensor)
 
         if self.pose_out is not None:
             self.last_pose_out = self.pose_out
             self.subject_pub.publish(self.pose_out)
-        else:
-            if self.last_pose_out is not None:
-                self.subject_pub.publish(self.last_pose_out)
+        elif self.last_pose_out is not None:
+            self.subject_pub.publish(self.last_pose_out)
             
-        marker_msg = self._dets_to_marker(tracked_xy) 
-        marker_msg.header = msg.header
-        #self.rviz_pub.publish(marker_msg)
+        # Avoid generating heavy marker logic if we aren't publishing it
+        if self.publish_rviz:
+            marker_msg = self._dets_to_marker(tracked_xy) 
+            marker_msg.header = msg.header
+            self.rviz_pub.publish(marker_msg)
 
-    def _parse_subject_pose(self, dets_msg):
+    def _parse_subject_pose(self, dets_msg, transform):
+        """Calculates pose using the transform passed down from scan_callback."""
         ps_msg = Pose()
         ps_msg.position.x = dets_msg.poses[0].position.x
         ps_msg.position.y = dets_msg.poses[0].position.y
         ps_msg.position.z = 0.0
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                                                    'map',
-                                                    'mecanumbot/base_scan',
-                                                    rclpy.time.Time(),  
-                                                )
-            pose_out = PoseStamped()
-            pose_out.header.stamp = self.get_clock().now().to_msg()
-            pose_out.header.frame_id = 'map'
-            pose_out.pose = tf2_geometry_msgs.do_transform_pose(ps_msg, transform)
-            return pose_out
-        except Exception as e:
-            self.get_logger().error(f"TF transform error: {e}")
-            return None
+        
+        pose_out = PoseStamped()
+        pose_out.header.stamp = self.get_clock().now().to_msg()
+        pose_out.header.frame_id = 'map'
+        pose_out.pose = tf2_geometry_msgs.do_transform_pose(ps_msg, transform)
+        return pose_out
         
     def _dets_to_pose_array(self, dets_xy):
         msg = PoseArray()
@@ -398,10 +381,9 @@ def preprocess_lidar(scan, target_len=240, max_range=10.0):
     scan = median_filter(scan, size=3)
 
     if len(scan) != target_len:
-        x_old = np.linspace(0, 1, len(scan))
-        x_new = np.linspace(0, 1, target_len)
-        interpolator = interp1d(x_old, scan, kind='nearest')
-        scan = interpolator(x_new)
+        # OPTIMIZATION: Replaced slow interp1d with native fast indexing
+        indices = np.round(np.linspace(0, len(scan) - 1, target_len)).astype(int)
+        scan = scan[indices]
 
     return scan
 

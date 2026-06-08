@@ -1,123 +1,171 @@
-
-import torch
 import rclpy
-import cv2
-from cv_bridge import CvBridge
-# ...
-
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from mecanumbot_msgs.msg import CamPersonDetectionArray
-from sensor_msgs.msg import CompressedImage, LaserScan
-from ament_index_python.packages import get_package_share_directory 
-from std_msgs.msg import String
+from sensor_msgs.msg import LaserScan
+from geometry_msgs.msg import PoseArray, Pose, Point
 from tf2_ros import TransformListener, Buffer
-import tf2_geometry_msgs
-from geometry_msgs.msg import Point32, PoseArray, PoseWithCovarianceStamped, Pose
-
-
-import numpy as np
-import json
-import os
-
 import math
+import numpy as np
 
 class PersonLocateNode(Node):
     def __init__(self):
         super().__init__('mecanumbot_locate_detections')
-        resolved_namespace = self.get_namespace().strip('/')
-        self.namespace = resolved_namespace
+        self.namespace = self.get_namespace().strip('/')
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
         # Publisher
         self.people_pub = self.create_publisher(PoseArray, 'people_fusion', 10)
+        
+        # Subscribers
         self.cam_people_sub = self.create_subscription(
-            CamPersonDetectionArray,
-            'cam_detected_people',
-            self.cam_people_callback,
-            10)
+            CamPersonDetectionArray, 'cam_detected_people', self.cam_people_callback, 10)
         self.laser_people_sub = self.create_subscription(
-            PoseArray,
-            'lidar_detected_people',
-            self.lidar_people_callback,
-            10)
+            PoseArray, 'lidar_detected_people', self.lidar_people_callback, 10)
         self.scan_sub = self.create_subscription(
-            LaserScan,
-            'scan',
-            self.scan_callback,
-            10)
-        self.laser_detections = None
-        self.laser_angles = None
-        self.cam_detections = None
+            LaserScan, 'scan', self.scan_callback, 10)
+            
+        self.laser_detections = []
+        self.laser_angles = []
+        self.cam_detections = []
         self.scan_data = None
+        
         self.get_logger().info("Person Locate Node has started.")
 
     def cam_people_callback(self, msg):
         self.cam_detections = msg.people
 
-    def lidar_people_callback(self, msg):
-        transform = self.tf_buffer.lookup_transform(
-                                                    'mecanumbot/base_link',
-                                                    'mecanumbot/base_scan',
-                                                    rclpy.time.Time(),  
-                                                )
-        self.laser_detections = [tf2_geometry_msgs.do_transform_pose(pose, transform) for pose in msg.poses]
-        self.laser_angles = {pose:math.atan2(pose.position.y, pose.position.x) for pose in self.laser_detections}
-        self.merge_detections()
-
     def scan_callback(self, msg):
         self.scan_data = msg
 
-    def arrange_with_scan_dets(self,person):
+    def lidar_people_callback(self, msg):
+        try:
+            # Safely fetch transform, defaulting to base_scan if header is missing
+            source_frame = msg.header.frame_id if msg.header.frame_id else 'mecanumbot/base_scan'
+            transform = self.tf_buffer.lookup_transform(
+                'mecanumbot/base_link',
+                source_frame,
+                rclpy.time.Time()
+            )
+        except Exception as e:
+            self.get_logger().warn(f"TF lookup failed: {e}", throttle_duration_sec=2.0)
+            return
+
+        # Extract translation and yaw
+        tx = transform.transform.translation.x
+        ty = transform.transform.translation.y
+        q = transform.transform.rotation
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+
+        self.laser_detections = []
+        self.laser_angles = []
+        
+        # Fast native math transformation (avoids tf2_geometry_msgs overhead)
+        for pose in msg.poses:
+            global_x = tx + (pose.position.x * cos_yaw) - (pose.position.y * sin_yaw)
+            global_y = ty + (pose.position.x * sin_yaw) + (pose.position.y * cos_yaw)
+            
+            new_pose = Pose()
+            new_pose.position.x = global_x
+            new_pose.position.y = global_y
+            new_pose.position.z = 0.0
+            
+            self.laser_detections.append(new_pose)
+            self.laser_angles.append(math.atan2(global_y, global_x))
+            
+        self.merge_detections()
+
+    def arrange_with_scan_dets(self, person):
+        # Ensure correct min/max bounds even if wrapped
+        ang_min = min(person.bound_angle_min, person.bound_angle_max)
+        ang_max = max(person.bound_angle_min, person.bound_angle_max)
+        
         pose_candidates = []
-        for laser_pose, angle in self.laser_angles.items():
-            if person.bound_angle_min <= angle <= person.bound_angle_max:
-                # This laser detection is within the camera detection's angular bounds
-                # You can further check distance, timestamp, etc. to confirm the match
-                pose_candidates.append([laser_pose])
-                self.get_logger().info(f"Camera detection at angle {angle} matches laser detection at position ({laser_pose.position.x}, {laser_pose.position.y})")
-                # Here you can create a new FusionPersonDetection message combining data from both sources
-                # and publish it as needed
-        return pose_candidates[0] if pose_candidates else None #TODO: algorithm to select the best candidate if multiple matches are found
+        for laser_pose, angle in zip(self.laser_detections, self.laser_angles):
+            if ang_min <= angle <= ang_max:
+                pose_candidates.append(laser_pose)
+                self.get_logger().debug(f"Cam det matches laser det at ({laser_pose.position.x:.2f}, {laser_pose.position.y:.2f})")
+                
+        # Return the first match (or implement a distance-based best fit here)
+        return pose_candidates[0] if pose_candidates else None
     
     def extrap_from_raw_scan(self, person):
         if self.scan_data is None:
             return None
+            
+        ranges = np.array(self.scan_data.ranges)
+        ang_min_scan = self.scan_data.angle_min
+        ang_inc = self.scan_data.angle_increment
         
-        min_scan_index = int((person.bound_angle_min - self.scan_data.angle_min) / self.scan_data.angle_increment)
-        max_scan_index = int((person.bound_angle_max - self.scan_data.angle_min) / self.scan_data.angle_increment)
-        angle = person.bound_angle_min + (person.bound_angle_max - person.bound_angle_min) / 2
-        distances = self.scan_data.ranges[min_scan_index:max_scan_index+1]
-        dist_avg = sum(distances) / len(distances) if distances else None
-        if not distances:
+        # Order the person bounding angles correctly
+        p_min = min(person.bound_angle_min, person.bound_angle_max)
+        p_max = max(person.bound_angle_min, person.bound_angle_max)
+
+        # Calculate indices and clamp them to array bounds to prevent IndexError
+        idx_min = int((p_min - ang_min_scan) / ang_inc)
+        idx_max = int((p_max - ang_min_scan) / ang_inc)
+        
+        idx_min = max(0, min(idx_min, len(ranges) - 1))
+        idx_max = max(0, min(idx_max, len(ranges) - 1))
+
+        if idx_min >= idx_max:
             return None
-            distance = self.scan_data.ranges[scan_index]
-        if dist_avg is not None and dist_avg < self.scan_data.range_max:
-            # Convert polar coordinates (distance, angle) to Cartesian coordinates (x, y)
-            x = dist_avg * math.cos(angle)
-            y = dist_avg * math.sin(angle)
-            self.get_logger().info(f"Extrapolated position for camera detection: ({x}, {y}) at angle {angle}")
-            return Pose(position=Point32(x=x, y=y, z=0.0))
+
+        # Extract distances and filter out inf, nan, and out-of-range limits
+        slice_ranges = ranges[idx_min:idx_max+1]
+        valid_mask = (
+            (slice_ranges > self.scan_data.range_min) & 
+            (slice_ranges < self.scan_data.range_max) & 
+            ~np.isinf(slice_ranges) & 
+            ~np.isnan(slice_ranges)
+        )
+        valid_ranges = slice_ranges[valid_mask]
+
+        if len(valid_ranges) == 0:
+            return None
+
+        # Use median to ignore background laser hits
+        dist_median = float(np.median(valid_ranges))
+        center_angle = p_min + (p_max - p_min) / 2.0
         
-        return None
+        x = dist_median * math.cos(center_angle)
+        y = dist_median * math.sin(center_angle)
+        
+        self.get_logger().debug(f"Extrapolated position: ({x:.2f}, {y:.2f}) at angle {center_angle:.2f}")
+        return Pose(position=Point(x=x, y=y, z=0.0))
+        
     def merge_detections(self):
-        if self.cam_detections is None:
+        if not self.cam_detections:
             return
         
-        # Implement your merging logic here, e.g., based on proximity, timestamps, etc.
-        # For simplicity, let's just print the number of detections from each source.
-        self.get_logger().info(f"Camera detections: {len(self.cam_detections.people)}")
+        self.get_logger().info(f"Camera detections: {len(self.cam_detections)}")
+        
+        fused_poses = PoseArray()
+        fused_poses.header.stamp = self.get_clock().now().to_msg()
+        fused_poses.header.frame_id = 'mecanumbot/base_link'
+
         for person in self.cam_detections:
+            # 1. Try to match with existing LiDAR detections
             person_pose = self.arrange_with_scan_dets(person)    
+            
+            # 2. Fallback: Extrapolate from raw scan
             if person_pose is None:
                 person_pose = self.extrap_from_raw_scan(person)
-                self.get_logger().info(f"Extrapolated pose for person: ({person_pose.position.x}, {person_pose.position.y})") if person_pose else self.get_logger().info("Could not extrapolate pose for person.")
-            
-        # After merging, you can publish the combined results as needed.
+                
+            if person_pose is not None:
+                fused_poses.poses.append(person_pose)
+                self.get_logger().info(f"Fused pose: ({person_pose.position.x:.2f}, {person_pose.position.y:.2f})")
+            else:
+                self.get_logger().info("Could not extrapolate pose for person.")
+                
+        # Publish combined array
+        if fused_poses.poses:
+            self.people_pub.publish(fused_poses)
 
-    
 def main(args=None):
     rclpy.init(args=args)
     node = PersonLocateNode()

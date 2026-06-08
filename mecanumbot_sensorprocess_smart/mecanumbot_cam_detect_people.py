@@ -58,10 +58,8 @@ class PersonDetectNode(Node):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.yolo_model = YOLO(weight_path) # Load pose weights from the package share directory
         self.yolo_model.to(self.device)
+        self.detected_people = CamPersonDetectionArray()
         
-
-        # State variables
-        self.latest_scan = None
 
         # TF2 for frame transformations
         self.tf_buffer = Buffer()
@@ -102,10 +100,10 @@ class PersonDetectNode(Node):
         self.robot_pose = msg.pose.pose
         self.robot_orientation_quat = self.robot_pose.orientation
         self.robot_orientation_euler = t3d.euler.quat2euler([
+            self.robot_orientation_quat.w,
             self.robot_orientation_quat.x,
             self.robot_orientation_quat.y,
-            self.robot_orientation_quat.z,
-            self.robot_orientation_quat.w
+            self.robot_orientation_quat.z
         ])
 
         self.camera_left_yaw = self.robot_orientation_euler[2] + self.camera_fov / 2
@@ -125,9 +123,6 @@ class PersonDetectNode(Node):
         return angle
 
     def image_callback(self, msg):
-        if self.latest_scan is None:
-            self.get_logger().warn("Waiting for scan data...", throttle_duration_sec=2.0)
-            return
 
         # 1. Convert compressed image to OpenCV format
         try:
@@ -141,9 +136,8 @@ class PersonDetectNode(Node):
         results = self.yolo_model(cv_image, classes=[0], verbose=False) # class 0 is 'person'
         
         detected_people = []
-        detected_people_bounds = []
         for result in results:
-            xyn = result.keypoints.xyn # Normalized keypoints (x, y in [0,1])
+            xyn = result.keypoints.xyn.cpu().numpy() # Normalized keypoints (x, y in [0,1])
             
             person_msg = CamPersonDetection()
             person_msg.keypoints.nose = self.XYN_to_Pose(xyn[0]) # Nose keypoint
@@ -169,14 +163,13 @@ class PersonDetectNode(Node):
             X_max_angle = self.cam_to_angle(X_max)
             person_msg.bound_angle_min = X_min_angle
             person_msg.bound_angle_max = X_max_angle
+            detected_people.append(person_msg)
 
 
-        out_msg = CamPersonDetectionArray()
-        out_msg.header.stamp = self.get_clock().now().to_msg()
-        out_msg.header.frame_id = f'{self.namespace}/head_link'
-        out_msg.people = detected_people
-        self.people_raw_pub.publish(out_msg)
-        #self.people_pub.publish(out_msg)
+        self.detected_people.header.stamp = self.get_clock().now().to_msg()
+        self.detected_people.header.frame_id = f'{self.namespace}/head_link'
+        self.detected_people.people = detected_people
+        self.people_pub.publish(self.detected_people)
         #self.get_logger().info(f"Published {len(detected_people)} detected people.")
 
             
