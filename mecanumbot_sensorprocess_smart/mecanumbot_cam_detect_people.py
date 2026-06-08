@@ -14,7 +14,7 @@ import numpy as np
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy,DurabilityPolicy
 from sensor_msgs.msg import LaserScan
-from mecanumbot_msgs.msg import PersonKeypoints, PersonKeypointsArray
+from mecanumbot_msgs.msg import CamPersonDetectionArray,CamPersonDetection
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from sensor_msgs.msg import CompressedImage
 from ament_index_python.packages import get_package_share_directory 
@@ -40,7 +40,7 @@ class PersonDetectNode(Node):
         parameters=[
         ('camera_params.camera_width', 640.0),
         ('camera_params.camera_height', 480.0),
-        ('camera_params.camera_fov', math.radians(62.2)),
+        ('camera_params.camera_fov', math.radians(60.0)),
         ('img_process_params.weight_file', 'yolo26n-pose.pt')
          ])
 
@@ -94,7 +94,7 @@ class PersonDetectNode(Node):
             qos_profile
         )
         # Publisher
-        self.people_pub = self.create_publisher(String, 'cam_people_detections', 10)
+        self.people_pub = self.create_publisher(CamPersonDetectionArray, 'cam_people_detections', 10)
         self.get_logger().info("Person Detect Node has started. Device: {}".format(self.device))
         
 
@@ -145,7 +145,7 @@ class PersonDetectNode(Node):
         for result in results:
             xyn = result.keypoints.xyn # Normalized keypoints (x, y in [0,1])
             
-            person_msg = PersonKeypoints()
+            person_msg = CamPersonDetection()
             person_msg.keypoints.nose = self.XYN_to_Pose(xyn[0]) # Nose keypoint
             person_msg.keypoints.left_eye = self.XYN_to_Pose(xyn[1]) # Left eye keypoint
             person_msg.keypoints.right_eye = self.XYN_to_Pose(xyn[2]) # Right eye keypoint
@@ -171,7 +171,7 @@ class PersonDetectNode(Node):
             person_msg.bound_angle_max = X_max_angle
 
 
-        out_msg = PersonKeypointsArray()
+        out_msg = CamPersonDetectionArray()
         out_msg.header.stamp = self.get_clock().now().to_msg()
         out_msg.header.frame_id = f'{self.namespace}/head_link'
         out_msg.people = detected_people
