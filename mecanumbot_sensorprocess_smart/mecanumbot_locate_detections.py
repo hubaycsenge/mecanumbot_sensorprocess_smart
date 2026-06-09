@@ -20,7 +20,7 @@ class PersonLocateNode(Node):
         
         # Subscribers
         self.cam_people_sub = self.create_subscription(
-            CamPersonDetectionArray, 'cam_detected_people', self.cam_people_callback, 10)
+            CamPersonDetectionArray, 'cam_people_detections', self.cam_people_callback, 10)
         self.laser_people_sub = self.create_subscription(
             PoseArray, 'lidar_detected_people', self.lidar_people_callback, 10)
         self.scan_sub = self.create_subscription(
