@@ -1,8 +1,10 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy
 from mecanumbot_msgs.msg import CamPersonDetectionArray
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PoseArray, Pose, Point
+from geometry_msgs.msg import PoseArray, Pose, Point, PoseWithCovarianceStamped
+from nav_msgs.msg import OccupancyGrid
 from tf2_ros import TransformListener, Buffer
 import math
 import numpy as np
@@ -15,7 +17,10 @@ class PersonLocateNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
-        # Publisher
+        # Declare parameter for the "X" meter offset behind the obstacle
+        self.declare_parameter('obstacle_buffer_x', 0.5)
+        
+        # Publishers
         self.people_pub = self.create_publisher(PoseArray, 'people_fusion', 10)
         
         # Subscribers
@@ -26,10 +31,21 @@ class PersonLocateNode(Node):
         self.scan_sub = self.create_subscription(
             LaserScan, 'scan', self.scan_callback, 10)
             
+        # Map sub uses Transient Local QoS because maps are usually published once
+        map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+        self.map_sub = self.create_subscription(
+            OccupancyGrid, '/map', self.map_callback, map_qos)
+        self.amcl_sub = self.create_subscription(
+            PoseWithCovarianceStamped, '/amcl_pose', self.amcl_callback, 10)
+            
+        # State variables
         self.laser_detections = []
         self.laser_angles = []
         self.cam_detections = []
         self.scan_data = None
+        self.map_data = None
+        self.map_array = None
+        self.amcl_pose = None
         
         self.get_logger().info("Person Locate Node has started.")
 
@@ -38,6 +54,14 @@ class PersonLocateNode(Node):
 
     def scan_callback(self, msg):
         self.scan_data = msg
+        
+    def amcl_callback(self, msg):
+        self.amcl_pose = msg.pose.pose
+
+    def map_callback(self, msg):
+        self.map_data = msg
+        # Convert map 1D array to 2D numpy array for fast spatial lookups
+        self.map_array = np.array(msg.data, dtype=np.int8).reshape((msg.info.height, msg.info.width))
 
     def lidar_people_callback(self, msg):
         try:
@@ -88,9 +112,7 @@ class PersonLocateNode(Node):
         for laser_pose, angle in zip(self.laser_detections, self.laser_angles):
             if ang_min <= angle <= ang_max:
                 pose_candidates.append(laser_pose)
-                self.get_logger().debug(f"Cam det matches laser det at ({laser_pose.position.x:.2f}, {laser_pose.position.y:.2f})")
                 
-        # Return the first match (or implement a distance-based best fit here)
         return pose_candidates[0] if pose_candidates else None
     
     def extrap_from_raw_scan(self, person):
@@ -135,14 +157,90 @@ class PersonLocateNode(Node):
         x = dist_median * math.cos(center_angle)
         y = dist_median * math.sin(center_angle)
         
-        self.get_logger().debug(f"Extrapolated position: ({x:.2f}, {y:.2f}) at angle {center_angle:.2f}")
         return Pose(position=Point(x=x, y=y, z=0.0))
+
+    def handle_map_occlusion(self, local_pose):
+        """ Checks if the proposed local point lands in a map obstacle and extrudes it. """
+        if self.map_data is None or self.map_array is None or self.amcl_pose is None:
+            return local_pose # Missing data, return standard point safely
+            
+        local_x = local_pose.position.x
+        local_y = local_pose.position.y
+        
+        # 1. Get Robot global pose in map
+        rx = self.amcl_pose.position.x
+        ry = self.amcl_pose.position.y
+        q = self.amcl_pose.orientation
+        ryaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        
+        # 2. Transform hit location to global map frame
+        hit_x = rx + local_x * math.cos(ryaw) - local_y * math.sin(ryaw)
+        hit_y = ry + local_x * math.sin(ryaw) + local_y * math.cos(ryaw)
+        
+        # 3. Convert to map grid coordinates
+        res = self.map_data.info.resolution
+        ox = self.map_data.info.origin.position.x
+        oy = self.map_data.info.origin.position.y
+        width = self.map_data.info.width
+        height = self.map_data.info.height
+        
+        gx = int((hit_x - ox) / res)
+        gy = int((hit_y - oy) / res)
+        
+        if not (0 <= gx < width and 0 <= gy < height):
+            return local_pose # Out of map bounds
+            
+        # 4. Check if the cell is an obstacle (> 50 confidence)
+        if self.map_array[gy, gx] > 50:
+            self.get_logger().info("Wall occlusion detected! Tracing back of wall...")
+            
+            # Global ray angle from robot
+            ray_yaw = ryaw + math.atan2(local_y, local_x)
+            step_size = res / 2.0 # Sub-cell stepping to ensure we don't jump gaps
+            
+            curr_dist = math.hypot(local_x, local_y) # Distance from robot to wall hit
+            max_dist = curr_dist + 4.0 # Limit tracing to prevent infinite loops (max 4m thick wall)
+            
+            # Trace until free space is found
+            while curr_dist < max_dist:
+                curr_x_map = rx + curr_dist * math.cos(ray_yaw)
+                curr_y_map = ry + curr_dist * math.sin(ray_yaw)
+                
+                cgx = int((curr_x_map - ox) / res)
+                cgy = int((curr_y_map - oy) / res)
+                
+                if not (0 <= cgx < width and 0 <= cgy < height):
+                    break # Ray left the map
+                    
+                cell_val = self.map_array[cgy, cgx]
+                if cell_val < 50 and cell_val != -1: 
+                    # Found free space behind wall (ignoring unknown space (-1))
+                    break
+                    
+                curr_dist += step_size
+                
+            # 5. Apply the +X offset from behind the wall
+            x_offset = self.get_parameter('obstacle_buffer_x').value
+            final_dist = curr_dist + x_offset
+            
+            # 6. Re-calculate returning pose in robot's local base_link frame
+            local_angle = math.atan2(local_y, local_x)
+            corrected_pose = Pose()
+            corrected_pose.position.x = final_dist * math.cos(local_angle)
+            corrected_pose.position.y = final_dist * math.sin(local_angle)
+            corrected_pose.position.z = 0.0
+            
+            self.get_logger().info(
+                f"Corrected pose shifted +{x_offset}m behind obstacle to "
+                f"({corrected_pose.position.x:.2f}, {corrected_pose.position.y:.2f})"
+            )
+            return corrected_pose
+            
+        return local_pose
         
     def merge_detections(self):
         if not self.cam_detections:
             return
-        
-        self.get_logger().info(f"Camera detections: {len(self.cam_detections)}")
         
         fused_poses = PoseArray()
         fused_poses.header.stamp = self.get_clock().now().to_msg()
@@ -156,11 +254,10 @@ class PersonLocateNode(Node):
             if person_pose is None:
                 person_pose = self.extrap_from_raw_scan(person)
                 
+            # 3. Validation: Verify pose isn't on a mapped wall
             if person_pose is not None:
+                person_pose = self.handle_map_occlusion(person_pose)
                 fused_poses.poses.append(person_pose)
-                self.get_logger().info(f"Fused pose: ({person_pose.position.x:.2f}, {person_pose.position.y:.2f})")
-            else:
-                self.get_logger().info("Could not extrapolate pose for person.")
                 
         # Publish combined array
         if fused_poses.poses:

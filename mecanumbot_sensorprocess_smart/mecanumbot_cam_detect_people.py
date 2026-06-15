@@ -18,7 +18,7 @@ from mecanumbot_msgs.msg import CamPersonDetectionArray,CamPersonDetection
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from sensor_msgs.msg import CompressedImage
 from ament_index_python.packages import get_package_share_directory 
-from std_msgs.msg import String
+from std_msgs.msg import String, Float32
 from tf2_ros import TransformListener, Buffer
 from geometry_msgs.msg import Pose
 
@@ -68,6 +68,7 @@ class PersonDetectNode(Node):
         self.detected_people = CamPersonDetectionArray()
         self.webcam_capture = None
         self.webcam_timer = None
+        self.robot_pose = None
         
 
         # TF2 for frame transformations
@@ -120,6 +121,7 @@ class PersonDetectNode(Node):
         
 
     def amcl_callback(self, msg):
+        self.get_logger().debug(f"Received AMCL pose update: {msg.pose.pose}")
         self.robot_pose = msg.pose.pose
         self.robot_orientation_quat = self.robot_pose.orientation
         self.robot_orientation_euler = t3d.euler.quat2euler([
@@ -143,6 +145,7 @@ class PersonDetectNode(Node):
     def cam_to_angle(self, X):
         X_inv = 1 - X # camera pixel indexing direction is opposite of robot frame dir
         angle = (1 - X_inv) * self.camera_right_yaw + X_inv * self.camera_left_yaw
+        self.get_logger().info(f"####### Calculated angle: {angle} from X: {X} with camera FOV: {math.degrees(self.camera_fov)} degrees")
         return angle
 
     def process_image(self, cv_image):
@@ -150,7 +153,11 @@ class PersonDetectNode(Node):
         detected_people = []
         if len(results) > 0:
             for result in results:
-                xyn = result.keypoints.xyn.cpu().numpy()[0, :, :] # Normalized keypoints (x, y in [0,1])
+                try:
+                    xyn = result.keypoints.xyn.cpu().numpy()[0, :, :] # Normalized keypoints (x, y in [0,1])
+                except Exception as e:
+                    self.get_logger().error(f"Failed to process keypoints: {e}")
+                    continue
                 self.get_logger().info(f"Received shape: {xyn.shape}")
                 if len(xyn) != 17:
                     self.get_logger().warn(f"Expected 17 keypoints, got {len(xyn)}. Skipping detection.")
@@ -176,10 +183,13 @@ class PersonDetectNode(Node):
                 person_msg.keypoints.right_ankle = self.XYN_to_Pose(xyn[16, :])
                 xyn_X = np.array(xyn)[:, 0]
                 X_max, X_min = xyn_X.min(), xyn_X.max() # camera pixel indexing direction is opposite of robot frame dir, so max X is leftmost point and min X is rightmost point
-                X_min_angle = self.cam_to_angle(X_min)
-                X_max_angle = self.cam_to_angle(X_max)
-                person_msg.bound_angle_min = X_min_angle
-                person_msg.bound_angle_max = X_max_angle
+                if self.robot_pose is not None:
+                    X_min_angle = self.cam_to_angle(X_min)
+                    X_max_angle = self.cam_to_angle(X_max)
+                    person_msg.bound_angle_min = Float32(data=X_min_angle)
+                    person_msg.bound_angle_max = Float32(data=X_max_angle)
+                else:
+                    self.get_logger().warn("Robot pose is None, cannot calculate bound angles.")
                 detected_people.append(person_msg)
 
         self.detected_people.header.stamp = self.get_clock().now().to_msg()
@@ -189,14 +199,16 @@ class PersonDetectNode(Node):
         self.get_logger().info(f"Published {len(detected_people)} detected people.")
 
     def image_callback(self, msg):
+        self.get_logger().info(f"Received image message with size: {len(msg.data)} bytes")
         try:
             np_arr = np.frombuffer(msg.data, np.uint8)
             cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
         except Exception as e:
             self.get_logger().error(f"Failed to decode image: {e}")
             return
-
-        self.process_image(cv_image)
+        if self.robot_pose is not None:
+            self.process_image(cv_image)
 
     def webcam_callback(self):
         if self.webcam_capture is None or not self.webcam_capture.isOpened():

@@ -27,7 +27,7 @@ def generate_launch_description():
             executable="mecanumbot_cam_detect_people",
             name="mecanumbot_cam_detect_people",  # must match YAML top-level key
             output="screen",
-            parameters=[yaml_file]
+            parameters=[yaml_file, {"from_topic": True}]
         ),
         Node(
             namespace="mecanumbot",

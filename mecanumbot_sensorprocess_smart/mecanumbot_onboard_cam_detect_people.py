@@ -135,6 +135,7 @@ class PersonDetectNode(Node):
     def cam_to_angle(self, X):
         X_inv = 1 - X 
         angle = (1 - X_inv) * self.camera_right_yaw + X_inv * self.camera_left_yaw
+        self.get_logger().info(f"####### Calculated angle: {angle} from X: {X} with camera FOV: {math.degrees(self.camera_fov)} degrees")
         return angle
 
     def process_image(self, cv_image):
@@ -174,9 +175,12 @@ class PersonDetectNode(Node):
                 person_msg.keypoints.right_ankle = self.XYN_to_Pose(xyn[16, :])
                 
                 xyn_X = np.array(xyn)[:, 0]
-                X_max, X_min = xyn_X.min(), xyn_X.max() 
-                person_msg.bound_angle_min = self.cam_to_angle(X_min)
-                person_msg.bound_angle_max = self.cam_to_angle(X_max)
+                X_max, X_min = xyn_X.min(), xyn_X.max()
+                if self.robot_pose is not None:
+                    person_msg.bound_angle_min = self.cam_to_angle(X_min)
+                    person_msg.bound_angle_max = self.cam_to_angle(X_max)
+                else:
+                    self.get_logger().warn("Robot pose is None, cannot calculate bound angles.")
                 detected_people.append(person_msg)
 
         self.detected_people.header.stamp = self.get_clock().now().to_msg()
