@@ -139,6 +139,7 @@ class PersonDetectNode(Node):
         return angle
 
     def process_image(self, cv_image):
+        self.get_logger().info("Processing image with TensorRT engine...")
         # OPTIMIZATION: Engine runs here natively on the Jetson's GPU
         results = self.yolo_model(cv_image, classes=[0], verbose=False) 
         detected_people = []
@@ -190,6 +191,7 @@ class PersonDetectNode(Node):
 
     def image_callback(self, msg):
         try:
+            self.get_logger().info("Received compressed image, decoding...")
             np_arr = np.frombuffer(msg.data, np.uint8)
             cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         except Exception as e:
