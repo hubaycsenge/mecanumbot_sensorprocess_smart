@@ -105,7 +105,7 @@ class DeepStreamPersonDetectNode(Node):
 
         # Publishers
         self.people_pub = self.create_publisher(CamPersonDetectionArray, 'cam_people_detections', 10)
-        self.debug_image_pub = self.create_publisher(CompressedImage, 'cam_people_detections/debug_image', 10)
+        self.debug_image_pub = self.create_publisher(CompressedImage, 'cam_people_detections/debug_image/compressed', 10)
 
         # Start Pipeline
         self.pipeline.set_state(Gst.State.PLAYING)
