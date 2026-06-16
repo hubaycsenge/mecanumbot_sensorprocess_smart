@@ -151,6 +151,7 @@ class DeepStreamPersonDetectNode(Node):
                 self.get_logger().info("Extracting user meta for object.")
                 self.get_logger().info(f"Object class_id: {obj_meta.class_id}, confidence: {obj_meta.confidence}")
                 self.get_logger().info(f'l_user: {l_user}')
+                self.get_logger().info(f'obj_meta: {obj_meta}')
                 while l_user is not None:
                     try:
                         user_meta = pyds.NvDsUserMeta.cast(l_user.data)
