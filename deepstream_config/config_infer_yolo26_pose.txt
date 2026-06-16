@@ -16,10 +16,8 @@ num-detected-classes=1
 maintain-aspect-ratio=1
 
 # --- THE CRITICAL PARSER SETTINGS ---
-# This links the C++ parser you just compiled
 custom-lib-path=/home/ubuntu/deepstream_source/DeepStream-Yolo-Pose/nvdsinfer_custom_impl_Yolo_pose/libnvdsinfer_custom_impl_Yolo_pose.so
 parse-bbox-instance-mask-func-name=NvDsInferParseYoloPose
 output-instance-mask=1
-
 [class-attrs-all]
 pre-cluster-threshold=0.25
