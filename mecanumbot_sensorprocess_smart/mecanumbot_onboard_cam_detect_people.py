@@ -165,6 +165,7 @@ class DeepStreamPersonDetectNode(Node):
                     # get_mask_array() natively returns a NumPy array!
                     # We just flatten it (if it isn't already) and reshape it back into our 17x3 matrix
                     raw_data = mask_params.get_mask_array()
+                    self.get_logger().info(f"Raw keypoint data shape: {raw_data.shape}, dtype: {raw_data.dtype}")
                     keypoints = np.array(raw_data).flatten().reshape((17, 3))
                     
                     person_msg = CamPersonDetection()
