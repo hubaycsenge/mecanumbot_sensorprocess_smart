@@ -159,6 +159,8 @@ class DeepStreamPersonDetectNode(Node):
                     # Check against the custom YoloPose meta type!
                     if user_meta.base_meta.meta_type == yolo_pose_meta_type:
                         self.get_logger().info(">>> Keypoints found! Extracting from user meta.")
+                    else:
+                        self.get_logger().info(f"User meta type {user_meta.base_meta.meta_type} does not match YoloPose type {yolo_pose_meta_type}. Skipping.")
                         
                         # DeepStream-Yolo-Pose outputs a float array of size 51 (17 * 3)
                         tensor_data = ctypes.cast(pyds.get_ptr(user_meta.user_meta_data), ctypes.POINTER(ctypes.c_float))
