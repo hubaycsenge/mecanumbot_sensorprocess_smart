@@ -148,9 +148,12 @@ class DeepStreamPersonDetectNode(Node):
                 
                 # Extract User Meta (Where the custom parser stores the 17 keypoints)
                 l_user = obj_meta.obj_user_meta_list
+                self.get_logger().info("Extracting user meta for object.")
                 while l_user is not None:
+                    self.get_logger().info("Processing user meta.")
                     try:
                         user_meta = pyds.NvDsUserMeta.cast(l_user.data)
+                        self.get_logger().info(f"User meta type: {user_meta.base_meta.meta_type}")
                     except StopIteration:
                         break
                     
