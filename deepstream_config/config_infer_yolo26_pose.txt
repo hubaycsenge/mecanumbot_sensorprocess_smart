@@ -1,18 +1,20 @@
 [property]
 gpu-id=0
+gie-unique-id=1
+process-mode=1
+
 net-scale-factor=0.0039215697906911373
-# Point this to your exported YOLO26-pose ONNX model
+
+# Points relative to this config file's location inside the share install directory
 onnx-file=../models/yolo26n-pose.onnx
-# DeepStream will automatically build and save the TensorRT engine here
-model-engine-file=model_b1_gpu0_fp16.engine
+model-engine-file=../models/model_b1_gpu0_fp16.engine
+
 force-implicit-batch-dim=1
 batch-size=1
 network-mode=2 # 2 = FP16 Precision (Best for Orin Nano)
 num-detected-classes=1
 maintain-aspect-ratio=1
 
-# --- THE CRITICAL PARSER SETTINGS ---
-# This links the C++ parser you just compiled
 custom-lib-path=/home/ubuntu/deepstream_source/DeepStream-Yolo-Pose/nvdsinfer_custom_impl_Yolo_pose/libnvdsinfer_custom_impl_Yolo_pose.so
 parse-bbox-func-name=NvDsInferParseYoloPose
 
