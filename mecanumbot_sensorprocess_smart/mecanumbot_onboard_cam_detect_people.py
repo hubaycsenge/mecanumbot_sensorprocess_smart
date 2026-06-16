@@ -173,48 +173,48 @@ class DeepStreamPersonDetectNode(Node):
                     person_msg = CamPersonDetection()
                     
                     # Store data into ROS message
-                    person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][0] / self.camera_width, (keypoints[0][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.left_eye = self.XYN_to_Pose(keypoints[1][0] / self.camera_width, (keypoints[1][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.right_eye = self.XYN_to_Pose(keypoints[2][0] / self.camera_width, (keypoints[2][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.left_ear = self.XYN_to_Pose(keypoints[3][0] / self.camera_width, (keypoints[3][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.right_ear = self.XYN_to_Pose(keypoints[4][0] / self.camera_width, (keypoints[4][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.left_shoulder = self.XYN_to_Pose(keypoints[5][0] / self.camera_width, (keypoints[5][1]- self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.right_shoulder = self.XYN_to_Pose(keypoints[6][0] / self.camera_width, (keypoints[6][1] - self.Y_padding)/ self.camera_height)
-                    person_msg.keypoints.left_elbow = self.XYN_to_Pose(keypoints[7][0] / self.camera_width, (keypoints[7][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.right_elbow = self.XYN_to_Pose(keypoints[8][0] / self.camera_width, (keypoints[8][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.left_wrist = self.XYN_to_Pose(keypoints[9][0] / self.camera_width, (keypoints[9][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.right_wrist = self.XYN_to_Pose(keypoints[10][0] / self.camera_width, (keypoints[10][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.left_hip = self.XYN_to_Pose(keypoints[11][0] / self.camera_width, (keypoints[11][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.right_hip = self.XYN_to_Pose(keypoints[12][0] / self.camera_width, (keypoints[12][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.left_knee = self.XYN_to_Pose(keypoints[13][0] / self.camera_width, (keypoints[13][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.right_knee = self.XYN_to_Pose(keypoints[14][0] / self.camera_width, (keypoints[14][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.left_ankle = self.XYN_to_Pose(keypoints[15][0] / self.camera_width, (keypoints[15][1] - self.Y_padding) / self.camera_height)
-                    person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][0] / self.camera_width, (keypoints[16][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][1] / self.camera_width, (keypoints[0][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_eye = self.XYN_to_Pose(keypoints[1][1] / self.camera_width, (keypoints[1][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_eye = self.XYN_to_Pose(keypoints[2][1] / self.camera_width, (keypoints[2][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_ear = self.XYN_to_Pose(keypoints[3][1] / self.camera_width, (keypoints[3][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_ear = self.XYN_to_Pose(keypoints[4][1] / self.camera_width, (keypoints[4][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_shoulder = self.XYN_to_Pose(keypoints[5][1] / self.camera_width, (keypoints[5][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_shoulder = self.XYN_to_Pose(keypoints[6][1] / self.camera_width, (keypoints[6][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_elbow = self.XYN_to_Pose(keypoints[7][1] / self.camera_width, (keypoints[7][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_elbow = self.XYN_to_Pose(keypoints[8][1] / self.camera_width, (keypoints[8][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_wrist = self.XYN_to_Pose(keypoints[9][1] / self.camera_width, (keypoints[9][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_wrist = self.XYN_to_Pose(keypoints[10][1] / self.camera_width, (keypoints[10][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_hip = self.XYN_to_Pose(keypoints[11][1] / self.camera_width, (keypoints[11][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_hip = self.XYN_to_Pose(keypoints[12][1] / self.camera_width, (keypoints[12][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_knee = self.XYN_to_Pose(keypoints[13][1] / self.camera_width, (keypoints[13][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_knee = self.XYN_to_Pose(keypoints[14][1] / self.camera_width, (keypoints[14][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_ankle = self.XYN_to_Pose(keypoints[15][1] / self.camera_width, (keypoints[15][2] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][1] / self.camera_width, (keypoints[16][2] - self.Y_padding) / self.camera_height)
 
                     detected_people.append(person_msg)
+                    if self.debug_mode:
+                        # --- DRAWING THE DEBUG VISUALIZATION ---
+                        # 1. Draw Bounding Box
+                        x1 = int(obj_meta.rect_params.left)
+                        y1 = int(obj_meta.rect_params.top)
+                        w = int(obj_meta.rect_params.width)
+                        h = int(obj_meta.rect_params.height)
+                        cv2.rectangle(debug_img, (x1, y1), (x1 + w, y1 + h), (255, 0, 0), 2)
 
-                    # --- DRAWING THE DEBUG VISUALIZATION ---
-                    # 1. Draw Bounding Box
-                    x1 = int(obj_meta.rect_params.left)
-                    y1 = int(obj_meta.rect_params.top)
-                    w = int(obj_meta.rect_params.width)
-                    h = int(obj_meta.rect_params.height)
-                    cv2.rectangle(debug_img, (x1, y1), (x1 + w, y1 + h), (255, 0, 0), 2)
+                        # 2. Draw Skeleton Lines
+                        for p1, p2 in SKELETON_CONNECTIONS:
+                            conf_p1, x_p1, y_p1 = keypoints[p1]
+                            conf_p2, x_p2, y_p2 = keypoints[p2]
+                            self.get_logger().info(f"Drawing line between keypoints {x_p1};{y_p1} and {x_p2};{y_p2} with confidences {conf_p1:.2f}, {conf_p2:.2f}")
+                            # Only draw the line if both keypoints are fairly confident
+                            if conf_p1 > 0.2 and conf_p2 > 0.2:
+                                cv2.line(debug_img, (int(x_p1), int(y_p1- self.Y_padding)), (int(x_p2), int(y_p2- self.Y_padding)), (0, 255, 255), 2)
 
-                    # 2. Draw Skeleton Lines
-                    for p1, p2 in SKELETON_CONNECTIONS:
-                        conf_p1, x_p1, y_p1 = keypoints[p1]
-                        conf_p2, x_p2, y_p2 = keypoints[p2]
-                        self.get_logger().info(f"Drawing line between keypoints {x_p1};{y_p1} and {x_p2};{y_p2} with confidences {conf_p1:.2f}, {conf_p2:.2f}")
-                        # Only draw the line if both keypoints are fairly confident
-                        if conf_p1 > 0.2 and conf_p2 > 0.2:
-                            cv2.line(debug_img, (int(x_p1), int(y_p1- self.Y_padding)), (int(x_p2), int(y_p2- self.Y_padding)), (0, 255, 255), 2)
-
-                    # 3. Draw Keypoint Dots
-                    for i in range(17):
-                        kconf, kx, ky = keypoints[i]
-                        if kconf > 0.2:
-                            cv2.circle(debug_img, (int(kx), int(ky- self.Y_padding)), 4, (0, 255, 0), -1)
+                        # 3. Draw Keypoint Dots
+                        for i in range(17):
+                            kconf, kx, ky = keypoints[i]
+                            if kconf > 0.2:
+                                cv2.circle(debug_img, (int(kx), int(ky- self.Y_padding)), 4, (0, 255, 0), -1)
 
                 l_obj = l_obj.next
             
