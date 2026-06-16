@@ -152,7 +152,7 @@ class DeepStreamPersonDetectNode(Node):
                 #self.get_logger().info(f"Object rect_params data: {obj_meta.rect_params.left}, {obj_meta.rect_params.top}, {obj_meta.rect_params.width}, {obj_meta.rect_params.height}")
                 self.get_logger().info(f'object text params: {obj_meta.text_params.display_text}')
                 self.get_logger().info(f'misc_params: {obj_meta.misc_obj_info}')
-                self.get_logger().info(f'object user meta: {obj_meta.user_meta_list.base_meta.batch_meta}, {obj_meta.user_meta_list.base_meta.uContext}')
+                self.get_logger().info(f'object user meta: {obj_meta.obj_user_meta_list.base_meta.batch_meta}, {obj_meta.obj_user_meta_list.base_meta.uContext}')
                 self.get_logger().info(f'Classifier params: {obj_meta.classifier_meta_list.num_labels},{obj_meta.classifier_meta_list.num_classes},{obj_meta.classifier_meta_list.base_meta.batch_meta}')
                 # --- THE FIX: EXTRACT KEYPOINTS FROM MASK_PARAMS ---
                 mask_params = obj_meta.mask_params
