@@ -197,6 +197,10 @@ class DeepStreamPersonDetectNode(Node):
                     self.get_logger().warn("Object detected, but no keypoint mask_params were found!")
 
                 l_obj = l_obj.next
+            try:
+                l_frame = l_frame.next
+            except StopIteration:
+                break
         # Publish back to ROS
         self.get_logger().info(f"Publishing {len(detected_people)} detected people.")
         if detected_people:
