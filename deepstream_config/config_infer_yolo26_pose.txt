@@ -17,10 +17,9 @@ maintain-aspect-ratio=1
 
 custom-lib-path=/home/ubuntu/deepstream_source/DeepStream-Yolo-Pose/nvdsinfer_custom_impl_Yolo_pose/libnvdsinfer_custom_impl_Yolo_pose.so
 parse-bbox-instance-mask-func-name=NvDsInferParseYoloPose
+network-type=3
+output-instance-mask=1
 
 [class-attrs-all]
 pre-cluster-threshold=0.25
 cluster-mode=4
-
-network-type=3
-output-instance-mask=1
