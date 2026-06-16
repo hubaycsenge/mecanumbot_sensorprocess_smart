@@ -235,6 +235,7 @@ class DeepStreamPersonDetectNode(Node):
 
         # Publish the Metadata back to ROS
         if detected_people:
+            self.get_logger().info(f"Detected {len(detected_people)} people in the frame.")
             msg_array = CamPersonDetectionArray()
             msg_array.header.stamp = self.get_clock().now().to_msg()
             msg_array.people = detected_people
