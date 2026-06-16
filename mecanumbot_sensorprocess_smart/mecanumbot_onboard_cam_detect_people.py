@@ -153,7 +153,9 @@ class DeepStreamPersonDetectNode(Node):
                 while l_user is not None:
                     try:
                         user_meta = pyds.NvDsUserMeta.cast(l_user.data)
+                        self.get_logger().info(f"User meta type: {user_meta.base_meta.meta_type}")
                     except StopIteration:
+                        self.get_logger().info("No more user meta to process.")
                         break
                     
                     # Check against the custom YoloPose meta type!
@@ -161,46 +163,46 @@ class DeepStreamPersonDetectNode(Node):
                         self.get_logger().info(">>> Keypoints found! Extracting from user meta.")
                     else:
                         self.get_logger().info(f"User meta type {user_meta.base_meta.meta_type} does not match YoloPose type {yolo_pose_meta_type}. Skipping.")
-                        
-                        # DeepStream-Yolo-Pose outputs a float array of size 51 (17 * 3)
-                        tensor_data = ctypes.cast(pyds.get_ptr(user_meta.user_meta_data), ctypes.POINTER(ctypes.c_float))
-                        keypoints = np.ctypeslib.as_array(tensor_data, shape=(51,)).reshape((17, 3))
-                        
-                        person_msg = CamPersonDetection()
-                        # Keypoint mapping (x, y coordinates normalized to 0-1)
-                        person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][0]/self.camera_width, keypoints[0][1]/self.camera_height)
-                        
-                        # ... Populate the rest ...
-                        detected_people.append(person_msg)
+                        continue
+                    # DeepStream-Yolo-Pose outputs a float array of size 51 (17 * 3)
+                    tensor_data = ctypes.cast(pyds.get_ptr(user_meta.user_meta_data), ctypes.POINTER(ctypes.c_float))
+                    keypoints = np.ctypeslib.as_array(tensor_data, shape=(51,)).reshape((17, 3))
+                    
+                    person_msg = CamPersonDetection()
+                    # Keypoint mapping (x, y coordinates normalized to 0-1)
+                    person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][0]/self.camera_width, keypoints[0][1]/self.camera_height)
+                    
+                    # ... Populate the rest ...
+                    detected_people.append(person_msg)
 
-                        l_user = l_user.next
-                        # DeepStream-Yolo-Pose outputs a float array of size 51 (17 * 3)
-                        tensor_data = ctypes.cast(pyds.get_ptr(user_meta.user_meta_data), ctypes.POINTER(ctypes.c_float))
-                        keypoints = np.ctypeslib.as_array(tensor_data, shape=(51,)).reshape((17, 3))
-                        self.get_logger().info(f"Keypoints extracted: {keypoints}")
-                        person_msg = CamPersonDetection()
-                        # Keypoint mapping (x, y coordinates normalized to 0-1)
-                        person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][0]/self.camera_width, keypoints[0][1]/self.camera_height)
-                        person_msg.keypoints.left_eye = self.XYN_to_Pose(keypoints[1][0]/self.camera_width, keypoints[1][1]/self.camera_height)
-                        person_msg.keypoints.right_eye = self.XYN_to_Pose(keypoints[2][0]/self.camera_width, keypoints[2][1]/self.camera_height)
-                        person_msg.keypoints.left_ear = self.XYN_to_Pose(keypoints[3][0]/self.camera_width, keypoints[3][1]/self.camera_height)
-                        person_msg.keypoints.right_ear = self.XYN_to_Pose(keypoints[4][0]/self.camera_width, keypoints[4][1]/self.camera_height)
-                        person_msg.keypoints.left_shoulder = self.XYN_to_Pose(keypoints[5][0]/self.camera_width, keypoints[5][1]/self.camera_height)
-                        person_msg.keypoints.right_shoulder = self.XYN_to_Pose(keypoints[6][0]/self.camera_width, keypoints[6][1]/self.camera_height)
-                        person_msg.keypoints.left_elbow = self.XYN_to_Pose(keypoints[7][0]/self.camera_width, keypoints[7][1]/self.camera_height)
-                        person_msg.keypoints.right_elbow = self.XYN_to_Pose(keypoints[8][0]/self.camera_width, keypoints[8][1]/self.camera_height)
-                        person_msg.keypoints.left_wrist = self.XYN_to_Pose(keypoints[9][0]/self.camera_width, keypoints[9][1]/self.camera_height)
-                        person_msg.keypoints.right_wrist = self.XYN_to_Pose(keypoints[10][0]/self.camera_width, keypoints[10][1]/self.camera_height)
-                        person_msg.keypoints.left_hip = self.XYN_to_Pose(keypoints[11][0]/self.camera_width, keypoints[11][1]/self.camera_height)
-                        person_msg.keypoints.right_hip = self.XYN_to_Pose(keypoints[12][0]/self.camera_width, keypoints[12][1]/self.camera_height)
-                        person_msg.keypoints.left_knee = self.XYN_to_Pose(keypoints[13][0]/self.camera_width, keypoints[13][1]/self.camera_height)
-                        person_msg.keypoints.right_knee = self.XYN_to_Pose(keypoints[14][0]/self.camera_width, keypoints[14][1]/self.camera_height)
-                        person_msg.keypoints.left_ankle = self.XYN_to_Pose(keypoints[15][0]/self.camera_width, keypoints[15][1]/self.camera_height)
-                        person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][0]/self.camera_width, keypoints[16][1]/self.camera_height)
-                        self.get_logger().info("Populating keypoints.")
-                        # ... Populate the rest of your 17 keypoints here ...
-                        
-                        detected_people.append(person_msg)
+                    l_user = l_user.next
+                    # DeepStream-Yolo-Pose outputs a float array of size 51 (17 * 3)
+                    tensor_data = ctypes.cast(pyds.get_ptr(user_meta.user_meta_data), ctypes.POINTER(ctypes.c_float))
+                    keypoints = np.ctypeslib.as_array(tensor_data, shape=(51,)).reshape((17, 3))
+                    self.get_logger().info(f"Keypoints extracted: {keypoints}")
+                    person_msg = CamPersonDetection()
+                    # Keypoint mapping (x, y coordinates normalized to 0-1)
+                    person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][0]/self.camera_width, keypoints[0][1]/self.camera_height)
+                    person_msg.keypoints.left_eye = self.XYN_to_Pose(keypoints[1][0]/self.camera_width, keypoints[1][1]/self.camera_height)
+                    person_msg.keypoints.right_eye = self.XYN_to_Pose(keypoints[2][0]/self.camera_width, keypoints[2][1]/self.camera_height)
+                    person_msg.keypoints.left_ear = self.XYN_to_Pose(keypoints[3][0]/self.camera_width, keypoints[3][1]/self.camera_height)
+                    person_msg.keypoints.right_ear = self.XYN_to_Pose(keypoints[4][0]/self.camera_width, keypoints[4][1]/self.camera_height)
+                    person_msg.keypoints.left_shoulder = self.XYN_to_Pose(keypoints[5][0]/self.camera_width, keypoints[5][1]/self.camera_height)
+                    person_msg.keypoints.right_shoulder = self.XYN_to_Pose(keypoints[6][0]/self.camera_width, keypoints[6][1]/self.camera_height)
+                    person_msg.keypoints.left_elbow = self.XYN_to_Pose(keypoints[7][0]/self.camera_width, keypoints[7][1]/self.camera_height)
+                    person_msg.keypoints.right_elbow = self.XYN_to_Pose(keypoints[8][0]/self.camera_width, keypoints[8][1]/self.camera_height)
+                    person_msg.keypoints.left_wrist = self.XYN_to_Pose(keypoints[9][0]/self.camera_width, keypoints[9][1]/self.camera_height)
+                    person_msg.keypoints.right_wrist = self.XYN_to_Pose(keypoints[10][0]/self.camera_width, keypoints[10][1]/self.camera_height)
+                    person_msg.keypoints.left_hip = self.XYN_to_Pose(keypoints[11][0]/self.camera_width, keypoints[11][1]/self.camera_height)
+                    person_msg.keypoints.right_hip = self.XYN_to_Pose(keypoints[12][0]/self.camera_width, keypoints[12][1]/self.camera_height)
+                    person_msg.keypoints.left_knee = self.XYN_to_Pose(keypoints[13][0]/self.camera_width, keypoints[13][1]/self.camera_height)
+                    person_msg.keypoints.right_knee = self.XYN_to_Pose(keypoints[14][0]/self.camera_width, keypoints[14][1]/self.camera_height)
+                    person_msg.keypoints.left_ankle = self.XYN_to_Pose(keypoints[15][0]/self.camera_width, keypoints[15][1]/self.camera_height)
+                    person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][0]/self.camera_width, keypoints[16][1]/self.camera_height)
+                    self.get_logger().info("Populating keypoints.")
+                    # ... Populate the rest of your 17 keypoints here ...
+                    
+                    detected_people.append(person_msg)
 
                     l_user = l_user.next
                 l_obj = l_obj.next
