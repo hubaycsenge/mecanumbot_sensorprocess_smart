@@ -218,13 +218,13 @@ class DeepStreamPersonDetectNode(Node):
 
                 l_obj = l_obj.next
             
-            # --- PUBLISH THE DEBUG IMAGE ---
-            debug_msg = CompressedImage()
-            debug_msg.header.stamp = self.get_clock().now().to_msg()
-            debug_msg.format = "jpeg"
-            _, encoded_img = cv2.imencode('.jpg', debug_img)
-            debug_msg.data = encoded_img.tobytes()
-            self.debug_image_pub.publish(debug_msg)
+            if self.debug_mode:
+                debug_msg = CompressedImage()
+                debug_msg.header.stamp = self.get_clock().now().to_msg()
+                debug_msg.format = "jpeg"
+                _, encoded_img = cv2.imencode('.jpg', debug_img)
+                debug_msg.data = encoded_img.tobytes()
+                self.debug_image_pub.publish(debug_msg)
 
             # Very important to prevent memory leaks on Jetson hardware!
             try:
