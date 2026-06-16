@@ -5,17 +5,15 @@ process-mode=1
 
 net-scale-factor=0.0039215697906911373
 
-# Points relative to this config file's location inside the share install directory
 onnx-file=../models/yolo26n-pose.onnx
 model-engine-file=../models/yolo26n-pose.onnx_b1_gpu0_fp16.engine
 
 force-implicit-batch-dim=1
 batch-size=1
-network-mode=2 # 2 = FP16 Precision (Best for Orin Nano)
+network-mode=2
 num-detected-classes=1
 maintain-aspect-ratio=1
 
-# --- THE INSTANCE MASK PARSER SETTINGS ---
 custom-lib-path=/home/ubuntu/deepstream_source/DeepStream-Yolo-Pose/nvdsinfer_custom_impl_Yolo_pose/libnvdsinfer_custom_impl_Yolo_pose.so
 parse-bbox-instance-mask-func-name=NvDsInferParseYoloPose
 network-type=3
@@ -23,5 +21,4 @@ output-instance-mask=1
 
 [class-attrs-all]
 pre-cluster-threshold=0.25
-# 4 = None (Required so DeepStream doesn't delete your keypoints!)
 cluster-mode=4
