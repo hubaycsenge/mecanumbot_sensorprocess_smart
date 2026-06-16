@@ -149,6 +149,7 @@ class DeepStreamPersonDetectNode(Node):
                 # Extract User Meta (Where the custom parser stores the 17 keypoints)
                 l_user = obj_meta.obj_user_meta_list
                 self.get_logger().info("Extracting user meta for object.")
+                self.get_logger().info(f"Object class_id: {obj_meta.class_id}, confidence: {obj_meta.confidence}")
                 while l_user is not None:
                     self.get_logger().info("Processing user meta.")
                     try:
