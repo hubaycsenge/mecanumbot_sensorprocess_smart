@@ -199,8 +199,8 @@ class DeepStreamPersonDetectNode(Node):
 
                     # 2. Draw Skeleton Lines
                     for p1, p2 in SKELETON_CONNECTIONS:
-                        x_p1, y_p1, conf_p1 = keypoints[p1]
-                        x_p2, y_p2, conf_p2 = keypoints[p2]
+                        conf_p1, x_p1, y_p1 = keypoints[p1]
+                        conf_p2, x_p2, y_p2 = keypoints[p2]
                         self.get_logger().info(f"Drawing line between keypoints {x_p1};{y_p1} and {x_p2};{y_p2} with confidences {conf_p1:.2f}, {conf_p2:.2f}")
                         # Only draw the line if both keypoints are fairly confident
                         if conf_p1 > 0.4 and conf_p2 > 0.4:
