@@ -155,14 +155,16 @@ class DeepStreamPersonDetectNode(Node):
                         break
                     
                     if user_meta.base_meta.meta_type == pyds.NvDsMetaType.NVDS_USER_META:
+                        self.get_logger().info("Extracting keypoints from user meta.")
                         # DeepStream-Yolo-Pose outputs a float array of size 51 (17 * 3)
                         tensor_data = ctypes.cast(pyds.get_ptr(user_meta.user_meta_data), ctypes.POINTER(ctypes.c_float))
                         keypoints = np.ctypeslib.as_array(tensor_data, shape=(51,)).reshape((17, 3))
-                        
+                        self.get_logger().info(f"Keypoints extracted: {keypoints}")
                         person_msg = CamPersonDetection()
                         # Keypoint mapping (x, y coordinates normalized to 0-1)
                         person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][0]/self.camera_width, keypoints[0][1]/self.camera_height)
                         person_msg.keypoints.left_eye = self.XYN_to_Pose(keypoints[1][0]/self.camera_width, keypoints[1][1]/self.camera_height)
+                        self.get_logger().info("Populating keypoints.")
                         # ... Populate the rest of your 17 keypoints here ...
                         
                         detected_people.append(person_msg)
