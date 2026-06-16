@@ -7,7 +7,7 @@ net-scale-factor=0.0039215697906911373
 
 # Points relative to this config file's location inside the share install directory
 onnx-file=../models/yolo26n-pose.onnx
-model-engine-file=../models/model_b1_gpu0_fp16.engine
+model-engine-file=../models/yolo26n-pose.onnx_b1_gpu0_fp16.engine
 
 force-implicit-batch-dim=1
 batch-size=1
