@@ -43,6 +43,7 @@ class DeepStreamPersonDetectNode(Node):
         self.pipeline = Gst.Pipeline()
 
         # Build Pipeline Elements
+        self.get_logger().info('source: ' + str(self.from_topic))
         if self.from_topic:
             self.source = Gst.ElementFactory.make("appsrc", "ros-image-source")
             self.source.set_property("is-live", True)
@@ -100,6 +101,7 @@ class DeepStreamPersonDetectNode(Node):
 
     def image_callback(self, msg):
         """Pushes ROS images into the DeepStream Pipeline."""
+        self.get_logger().debug("Received image from ROS topic.")
         try:
             np_arr = np.frombuffer(msg.data, np.uint8)
             cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
@@ -112,6 +114,7 @@ class DeepStreamPersonDetectNode(Node):
             self.get_logger().error(f"Image decode failed: {e}")
 
     def XYN_to_Pose(self, x, y):
+        self.get_logger().debug(f"Converting normalized coordinates ({x}, {y}) to Pose.")
         msg = Pose()
         msg.position.x = float(x)
         msg.position.y = float(y)
@@ -120,6 +123,7 @@ class DeepStreamPersonDetectNode(Node):
 
     def metadata_probe(self, pad, info, u_data):
         """Runs asynchronously when the GPU finishes inference on a frame."""
+        self.get_logger().info(">>> Probe triggered! Data is flowing through the network.", throttle_duration_sec=2.0)
         gst_buffer = info.get_buffer()
         if not gst_buffer:
             return Gst.PadProbeReturn.OK
@@ -169,6 +173,7 @@ class DeepStreamPersonDetectNode(Node):
 
         # Publish back to ROS
         if detected_people:
+            self.get_logger().info(f"Publishing {len(detected_people)} detected people.")
             msg_array = CamPersonDetectionArray()
             msg_array.header.stamp = self.get_clock().now().to_msg()
             msg_array.people = detected_people
