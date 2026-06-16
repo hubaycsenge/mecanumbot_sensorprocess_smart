@@ -15,10 +15,13 @@ network-mode=2 # 2 = FP16 Precision (Best for Orin Nano)
 num-detected-classes=1
 maintain-aspect-ratio=1
 
+# --- THE INSTANCE MASK PARSER SETTINGS ---
 custom-lib-path=/home/ubuntu/deepstream_source/DeepStream-Yolo-Pose/nvdsinfer_custom_impl_Yolo_pose/libnvdsinfer_custom_impl_Yolo_pose.so
 parse-bbox-instance-mask-func-name=NvDsInferParseYoloPose
-
+network-type=3
+output-instance-mask=1
 
 [class-attrs-all]
 pre-cluster-threshold=0.25
-cluster-mode=0
+# 4 = None (Required so DeepStream doesn't delete your keypoints!)
+cluster-mode=4
