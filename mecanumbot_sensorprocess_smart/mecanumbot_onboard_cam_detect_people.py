@@ -191,13 +191,14 @@ class DeepStreamPersonDetectNode(Node):
                     person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][0] / self.camera_width, keypoints[16][1] / self.camera_height)
                     
                     # (Remember to port over your bound_angle_min/max calculations here if you still need them!)
-                    self.get_logger().info(f"Detected person with keypoints: {person_msg.keypoints}")
+                    self.get_logger().info(f"Detected person with keypoints")
                     detected_people.append(person_msg)
                 else:
                     self.get_logger().warn("Object detected, but no keypoint mask_params were found!")
 
                 l_obj = l_obj.next
         # Publish back to ROS
+        self.get_logger().info(f"Publishing {len(detected_people)} detected people.")
         if detected_people:
             self.get_logger().info(f"Publishing {len(detected_people)} detected people.")
             msg_array = CamPersonDetectionArray()
