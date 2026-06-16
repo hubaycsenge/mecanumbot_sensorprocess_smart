@@ -37,7 +37,8 @@ class DeepStreamPersonDetectNode(Node):
                 ('camera_params.camera_fov', math.radians(60.0)),
                 ('from_topic', False),
                 ('camera_topic', 'camera/image_raw/compressed'),
-                ('webcam_device', '/dev/video0')
+                ('webcam_device', '/dev/video0'),
+                ('debug_mode', False)
             ]
         )
 
@@ -46,6 +47,7 @@ class DeepStreamPersonDetectNode(Node):
         self.from_topic = self.get_parameter('from_topic').value
         self.webcam_device = self.get_parameter('webcam_device').value
         self.Y_padding = (self.camera_width - self.camera_height)/2
+        self.debug_mode = self.get_parameter('debug_mode').value
 
         # Initialize GStreamer
         Gst.init(None)
@@ -106,7 +108,8 @@ class DeepStreamPersonDetectNode(Node):
 
         # Publishers
         self.people_pub = self.create_publisher(CamPersonDetectionArray, 'cam_people_detections', 10)
-        self.debug_image_pub = self.create_publisher(CompressedImage, 'cam_people_detections/debug_image/compressed', 10)
+        if self.debug_mode:
+            self.debug_image_pub = self.create_publisher(CompressedImage, 'cam_people_detections/debug_image/compressed', 10)
 
         # Start Pipeline
         self.pipeline.set_state(Gst.State.PLAYING)
@@ -170,24 +173,24 @@ class DeepStreamPersonDetectNode(Node):
                     person_msg = CamPersonDetection()
                     
                     # Store data into ROS message
-                    person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][0] / self.camera_width, keypoints[0][1] / self.camera_height)
-                    person_msg.keypoints.left_eye = self.XYN_to_Pose(keypoints[1][0] / self.camera_width, keypoints[1][1] / self.camera_height)
-                    person_msg.keypoints.right_eye = self.XYN_to_Pose(keypoints[2][0] / self.camera_width, keypoints[2][1] / self.camera_height)
-                    person_msg.keypoints.left_ear = self.XYN_to_Pose(keypoints[3][0] / self.camera_width, keypoints[3][1] / self.camera_height)
-                    person_msg.keypoints.right_ear = self.XYN_to_Pose(keypoints[4][0] / self.camera_width, keypoints[4][1] / self.camera_height)
-                    person_msg.keypoints.left_shoulder = self.XYN_to_Pose(keypoints[5][0] / self.camera_width, keypoints[5][1] / self.camera_height)
-                    person_msg.keypoints.right_shoulder = self.XYN_to_Pose(keypoints[6][0] / self.camera_width, keypoints[6][1] / self.camera_height)
-                    person_msg.keypoints.left_elbow = self.XYN_to_Pose(keypoints[7][0] / self.camera_width, keypoints[7][1] / self.camera_height)
-                    person_msg.keypoints.right_elbow = self.XYN_to_Pose(keypoints[8][0] / self.camera_width, keypoints[8][1] / self.camera_height)
-                    person_msg.keypoints.left_wrist = self.XYN_to_Pose(keypoints[9][0] / self.camera_width, keypoints[9][1] / self.camera_height)
-                    person_msg.keypoints.right_wrist = self.XYN_to_Pose(keypoints[10][0] / self.camera_width, keypoints[10][1] / self.camera_height)
-                    person_msg.keypoints.left_hip = self.XYN_to_Pose(keypoints[11][0] / self.camera_width, keypoints[11][1] / self.camera_height)
-                    person_msg.keypoints.right_hip = self.XYN_to_Pose(keypoints[12][0] / self.camera_width, keypoints[12][1] / self.camera_height)
-                    person_msg.keypoints.left_knee = self.XYN_to_Pose(keypoints[13][0] / self.camera_width, keypoints[13][1] / self.camera_height)
-                    person_msg.keypoints.right_knee = self.XYN_to_Pose(keypoints[14][0] / self.camera_width, keypoints[14][1] / self.camera_height)
-                    person_msg.keypoints.left_ankle = self.XYN_to_Pose(keypoints[15][0] / self.camera_width, keypoints[15][1] / self.camera_height)
-                    person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][0] / self.camera_width, keypoints[16][1] / self.camera_height)
-                    
+                    person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][0] / self.camera_width, (keypoints[0][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_eye = self.XYN_to_Pose(keypoints[1][0] / self.camera_width, (keypoints[1][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_eye = self.XYN_to_Pose(keypoints[2][0] / self.camera_width, (keypoints[2][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_ear = self.XYN_to_Pose(keypoints[3][0] / self.camera_width, (keypoints[3][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_ear = self.XYN_to_Pose(keypoints[4][0] / self.camera_width, (keypoints[4][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_shoulder = self.XYN_to_Pose(keypoints[5][0] / self.camera_width, (keypoints[5][1]- self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_shoulder = self.XYN_to_Pose(keypoints[6][0] / self.camera_width, (keypoints[6][1] - self.Y_padding)/ self.camera_height)
+                    person_msg.keypoints.left_elbow = self.XYN_to_Pose(keypoints[7][0] / self.camera_width, (keypoints[7][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_elbow = self.XYN_to_Pose(keypoints[8][0] / self.camera_width, (keypoints[8][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_wrist = self.XYN_to_Pose(keypoints[9][0] / self.camera_width, (keypoints[9][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_wrist = self.XYN_to_Pose(keypoints[10][0] / self.camera_width, (keypoints[10][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_hip = self.XYN_to_Pose(keypoints[11][0] / self.camera_width, (keypoints[11][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_hip = self.XYN_to_Pose(keypoints[12][0] / self.camera_width, (keypoints[12][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_knee = self.XYN_to_Pose(keypoints[13][0] / self.camera_width, (keypoints[13][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_knee = self.XYN_to_Pose(keypoints[14][0] / self.camera_width, (keypoints[14][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.left_ankle = self.XYN_to_Pose(keypoints[15][0] / self.camera_width, (keypoints[15][1] - self.Y_padding) / self.camera_height)
+                    person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][0] / self.camera_width, (keypoints[16][1] - self.Y_padding) / self.camera_height)
+
                     detected_people.append(person_msg)
 
                     # --- DRAWING THE DEBUG VISUALIZATION ---
