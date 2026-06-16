@@ -17,6 +17,14 @@ import math
 import transforms3d as t3d
 from ament_index_python.packages import get_package_share_directory
 
+# Standard YOLO pose skeleton connections
+SKELETON_CONNECTIONS = [
+    (0, 1), (0, 2), (1, 3), (2, 4),                 # Head/Face
+    (5, 6),                                         # Shoulders
+    (5, 7), (7, 9), (6, 8), (8, 10),                # Arms
+    (11, 12), (5, 11), (6, 12),                     # Torso/Hips
+    (11, 13), (13, 15), (12, 14), (14, 16)          # Legs
+]
 
 class DeepStreamPersonDetectNode(Node):
     def __init__(self, namespace=''):
@@ -50,7 +58,6 @@ class DeepStreamPersonDetectNode(Node):
             caps = Gst.Caps.from_string(f"video/x-raw, format=BGR, width={self.camera_width}, height={self.camera_height}, framerate=15/1")
             self.source.set_property("caps", caps)
             
-            # ROS Subscriber to feed appsrc
             sensor_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=10)
             self.image_sub = self.create_subscription(CompressedImage, self.get_parameter('camera_topic').value, self.image_callback, sensor_qos)
         else:
@@ -65,42 +72,46 @@ class DeepStreamPersonDetectNode(Node):
         self.mux.set_property("batched-push-timeout", 40000)
 
         self.nvinfer = Gst.ElementFactory.make("nvinfer", "primary-inference")
-        # POINT THIS TO YOUR CONFIG FILE
         path = get_package_share_directory('mecanumbot_sensorprocess_smart')
         self.nvinfer.set_property("config-file-path", os.path.join(path, 'deepstream_config', 'config_infer_yolo26_pose.txt'))
 
+        # --- NEW ELEMENTS FOR IMAGE EXTRACTION ---
+        # Converts infer output format to RGBA so Python can read it
+        self.vidconv_out = Gst.ElementFactory.make("nvvideoconvert", "convertor_out")
+        self.capsfilter_out = Gst.ElementFactory.make("capsfilter", "capsfilter_rgba")
+        caps_rgba = Gst.Caps.from_string("video/x-raw(memory:NVMM), format=RGBA")
+        self.capsfilter_out.set_property("caps", caps_rgba)
+
         self.sink = Gst.ElementFactory.make("fakesink", "fakesink")
 
-        # Add elements to pipeline
-        for elem in [self.source, self.vidconv_src, self.mux, self.nvinfer, self.sink]:
+        # Add all elements to pipeline
+        for elem in [self.source, self.vidconv_src, self.mux, self.nvinfer, self.vidconv_out, self.capsfilter_out, self.sink]:
             self.pipeline.add(elem)
 
-        # Link elements
-        if self.from_topic:
-            self.source.link(self.vidconv_src)
-        else:
-            self.source.link(self.vidconv_src)
-            
+        # Link elements: source -> vidconv_src -> mux -> nvinfer -> vidconv_out -> capsfilter -> sink
+        self.source.link(self.vidconv_src)
         vidconv_src_pad = self.vidconv_src.get_static_pad("src")
         mux_sink_pad = self.mux.get_request_pad("sink_0")
         vidconv_src_pad.link(mux_sink_pad)
         
         self.mux.link(self.nvinfer)
-        self.nvinfer.link(self.sink)
+        self.nvinfer.link(self.vidconv_out)
+        self.vidconv_out.link(self.capsfilter_out)
+        self.capsfilter_out.link(self.sink)
 
-        # Attach Probe to extract metadata from the GPU
-        infer_src_pad = self.nvinfer.get_static_pad("src")
-        infer_src_pad.add_probe(Gst.PadProbeType.BUFFER, self.metadata_probe, 0)
+        # Attach Probe to the end of the capsfilter so RGBA format is guaranteed
+        probe_pad = self.capsfilter_out.get_static_pad("src")
+        probe_pad.add_probe(Gst.PadProbeType.BUFFER, self.metadata_probe, 0)
 
-        # Publisher
+        # Publishers
         self.people_pub = self.create_publisher(CamPersonDetectionArray, 'cam_people_detections', 10)
+        self.debug_image_pub = self.create_publisher(CompressedImage, 'cam_people_detections/debug_image', 10)
 
         # Start Pipeline
         self.pipeline.set_state(Gst.State.PLAYING)
         self.get_logger().info("DeepStream Pipeline Running!")
 
     def image_callback(self, msg):
-        """Pushes ROS images into the DeepStream Pipeline."""
         self.get_logger().debug("Received image from ROS topic.")
         try:
             np_arr = np.frombuffer(msg.data, np.uint8)
@@ -114,7 +125,6 @@ class DeepStreamPersonDetectNode(Node):
             self.get_logger().error(f"Image decode failed: {e}")
 
     def XYN_to_Pose(self, x, y):
-        self.get_logger().debug(f"Converting normalized coordinates ({x}, {y}) to Pose.")
         msg = Pose()
         msg.position.x = float(x)
         msg.position.y = float(y)
@@ -122,15 +132,12 @@ class DeepStreamPersonDetectNode(Node):
         return msg
 
     def metadata_probe(self, pad, info, u_data):
-        """Runs asynchronously when the GPU finishes inference on a frame."""
-        self.get_logger().info(">>> Probe triggered! Data is flowing through the network.", throttle_duration_sec=2.0)
         gst_buffer = info.get_buffer()
         if not gst_buffer:
             return Gst.PadProbeReturn.OK
 
         batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(gst_buffer))
         l_frame = batch_meta.frame_meta_list
-        
         detected_people = []
 
         while l_frame is not None:
@@ -139,6 +146,13 @@ class DeepStreamPersonDetectNode(Node):
             except StopIteration:
                 break
 
+            # --- IMAGE EXTRACTION ---
+            # Retrieve the raw GPU buffer as an RGBA Numpy Array
+            n_frame = pyds.get_nvds_buf_surface(hash(gst_buffer), frame_meta.batch_id)
+            # Make a copy into CPU memory so OpenCV can manipulate it safely
+            frame_copy = np.array(n_frame, copy=True, order='C')
+            debug_img = cv2.cvtColor(frame_copy, cv2.COLOR_RGBA2BGR)
+
             l_obj = frame_meta.obj_meta_list
             while l_obj is not None:
                 try:
@@ -146,32 +160,15 @@ class DeepStreamPersonDetectNode(Node):
                 except StopIteration:
                     break
                 
-                #self.get_logger().info(f"Object class_id: {obj_meta.class_id}, confidence: {obj_meta.confidence}")
-                #self.get_logger().info(f"Object bounding box: ({obj_meta.rect_params.left}, {obj_meta.rect_params.top}, {obj_meta.rect_params.width}, {obj_meta.rect_params.height})")
-                #self.get_logger().info(f"Object mask_params size: {obj_meta.mask_params.size}")
-                #self.get_logger().info(f'Object mask_params data:{obj_meta.mask_params.data}')
-                #self.get_logger().info(f"Object rect_params data: {obj_meta.rect_params.left}, {obj_meta.rect_params.top}, {obj_meta.rect_params.width}, {obj_meta.rect_params.height}")
-                #self.get_logger().info(f'object text params: {obj_meta.text_params.display_text}')
-                #self.get_logger().info(f'misc_params: {obj_meta.misc_obj_info}')
-                #self.get_logger().info(f'object user meta: {obj_meta.obj_user_meta_list.base_meta.batch_meta}, {obj_meta.obj_user_meta_list.base_meta.uContext}')
-                #self.get_logger().info(f'Classifier params: {obj_meta.classifier_meta_list.num_labels},{obj_meta.classifier_meta_list.num_classes},{obj_meta.classifier_meta_list.base_meta.batch_meta}')
-                # --- THE FIX: EXTRACT KEYPOINTS FROM MASK_PARAMS ---
                 mask_params = obj_meta.mask_params
                 
-                # Check if the C++ parser successfully injected data into the mask array
                 if mask_params.size > 0:
-                    #self.get_logger().info(f">>> Keypoints found in mask_params!")
-                    
-                    # get_mask_array() natively returns a NumPy array!
-                    # We just flatten it (if it isn't already) and reshape it back into our 17x3 matrix
                     raw_data = mask_params.get_mask_array()
-                    #self.get_logger().info(f"Raw keypoint data shape: {raw_data.shape}, dtype: {raw_data.dtype}")
                     keypoints = np.array(raw_data).flatten()[:51].reshape((17, 3))
                     
                     person_msg = CamPersonDetection()
                     
-                    # NOTE: DeepStream outputs keypoints in absolute StreamMux coordinates (e.g. 640x480).
-                    # Your division successfully normalizes them back to 0.0 - 1.0 (XYN) format!
+                    # Store data into ROS message
                     person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][0] / self.camera_width, keypoints[0][1] / self.camera_height)
                     person_msg.keypoints.left_eye = self.XYN_to_Pose(keypoints[1][0] / self.camera_width, keypoints[1][1] / self.camera_height)
                     person_msg.keypoints.right_eye = self.XYN_to_Pose(keypoints[2][0] / self.camera_width, keypoints[2][1] / self.camera_height)
@@ -190,21 +187,54 @@ class DeepStreamPersonDetectNode(Node):
                     person_msg.keypoints.left_ankle = self.XYN_to_Pose(keypoints[15][0] / self.camera_width, keypoints[15][1] / self.camera_height)
                     person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][0] / self.camera_width, keypoints[16][1] / self.camera_height)
                     
-                    # (Remember to port over your bound_angle_min/max calculations here if you still need them!)
-                    self.get_logger().info(f"Detected person with keypoints")
                     detected_people.append(person_msg)
-                else:
-                    self.get_logger().warn("Object detected, but no keypoint mask_params were found!")
+
+                    # --- DRAWING THE DEBUG VISUALIZATION ---
+                    # 1. Draw Bounding Box
+                    x1 = int(obj_meta.rect_params.left)
+                    y1 = int(obj_meta.rect_params.top)
+                    w = int(obj_meta.rect_params.width)
+                    h = int(obj_meta.rect_params.height)
+                    cv2.rectangle(debug_img, (x1, y1), (x1 + w, y1 + h), (255, 0, 0), 2)
+
+                    # 2. Draw Skeleton Lines
+                    for p1, p2 in SKELETON_CONNECTIONS:
+                        x_p1, y_p1, conf_p1 = keypoints[p1]
+                        x_p2, y_p2, conf_p2 = keypoints[p2]
+                        # Only draw the line if both keypoints are fairly confident
+                        if conf_p1 > 0.4 and conf_p2 > 0.4:
+                            cv2.line(debug_img, (int(x_p1), int(y_p1)), (int(x_p2), int(y_p2)), (0, 255, 255), 2)
+
+                    # 3. Draw Keypoint Dots
+                    for i in range(17):
+                        kx, ky, kconf = keypoints[i]
+                        if kconf > 0.4:
+                            cv2.circle(debug_img, (int(kx), int(ky)), 4, (0, 255, 0), -1)
 
                 l_obj = l_obj.next
+            
+            # --- PUBLISH THE DEBUG IMAGE ---
+            debug_msg = CompressedImage()
+            debug_msg.header.stamp = self.get_clock().now().to_msg()
+            debug_msg.format = "jpeg"
+            _, encoded_img = cv2.imencode('.jpg', debug_img)
+            debug_msg.data = encoded_img.tobytes()
+            self.debug_image_pub.publish(debug_msg)
+
+            # Very important to prevent memory leaks on Jetson hardware!
+            try:
+                pyds.unmap_nvds_buf_surface(hash(gst_buffer), frame_meta.batch_id)
+            except AttributeError:
+                # Fails gracefully if you are on an older DeepStream version that doesn't mandate unmapping
+                pass
+
             try:
                 l_frame = l_frame.next
             except StopIteration:
                 break
-        # Publish back to ROS
-        self.get_logger().info(f"Publishing {len(detected_people)} detected people.")
+
+        # Publish the Metadata back to ROS
         if detected_people:
-            self.get_logger().info(f"Publishing {len(detected_people)} detected people.")
             msg_array = CamPersonDetectionArray()
             msg_array.header.stamp = self.get_clock().now().to_msg()
             msg_array.people = detected_people
