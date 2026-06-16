@@ -145,21 +145,33 @@ class DeepStreamPersonDetectNode(Node):
                     obj_meta = pyds.NvDsObjectMeta.cast(l_obj.data)
                 except StopIteration:
                     break
-                
+                yolo_pose_meta_type = pyds.nvds_get_user_meta_type("TensorRT.YoloPose")
                 # Extract User Meta (Where the custom parser stores the 17 keypoints)
                 l_user = obj_meta.obj_user_meta_list
                 self.get_logger().info("Extracting user meta for object.")
                 self.get_logger().info(f"Object class_id: {obj_meta.class_id}, confidence: {obj_meta.confidence}")
                 while l_user is not None:
-                    self.get_logger().info("Processing user meta.")
                     try:
                         user_meta = pyds.NvDsUserMeta.cast(l_user.data)
-                        self.get_logger().info(f"User meta type: {user_meta.base_meta.meta_type}")
                     except StopIteration:
                         break
                     
-                    if user_meta.base_meta.meta_type == pyds.NvDsMetaType.NVDS_USER_META:
-                        self.get_logger().info("Extracting keypoints from user meta.")
+                    # Check against the custom YoloPose meta type!
+                    if user_meta.base_meta.meta_type == yolo_pose_meta_type:
+                        self.get_logger().info(">>> Keypoints found! Extracting from user meta.")
+                        
+                        # DeepStream-Yolo-Pose outputs a float array of size 51 (17 * 3)
+                        tensor_data = ctypes.cast(pyds.get_ptr(user_meta.user_meta_data), ctypes.POINTER(ctypes.c_float))
+                        keypoints = np.ctypeslib.as_array(tensor_data, shape=(51,)).reshape((17, 3))
+                        
+                        person_msg = CamPersonDetection()
+                        # Keypoint mapping (x, y coordinates normalized to 0-1)
+                        person_msg.keypoints.nose = self.XYN_to_Pose(keypoints[0][0]/self.camera_width, keypoints[0][1]/self.camera_height)
+                        
+                        # ... Populate the rest ...
+                        detected_people.append(person_msg)
+
+                        l_user = l_user.next
                         # DeepStream-Yolo-Pose outputs a float array of size 51 (17 * 3)
                         tensor_data = ctypes.cast(pyds.get_ptr(user_meta.user_meta_data), ctypes.POINTER(ctypes.c_float))
                         keypoints = np.ctypeslib.as_array(tensor_data, shape=(51,)).reshape((17, 3))

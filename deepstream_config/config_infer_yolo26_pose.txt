@@ -20,3 +20,4 @@ parse-bbox-func-name=NvDsInferParseYoloPose
 
 [class-attrs-all]
 pre-cluster-threshold=0.25
+cluster-mode=4
