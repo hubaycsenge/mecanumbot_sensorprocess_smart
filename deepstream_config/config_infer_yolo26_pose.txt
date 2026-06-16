@@ -3,6 +3,7 @@ gpu-id=0
 gie-unique-id=1
 # 0 = Detector (Primary GIE)
 process-mode=1
+cluster-mode=4
 net-scale-factor=0.0039215697906911373
 # Point this to your exported YOLO26-pose ONNX model
 onnx-file=../models/yolo26n-pose.onnx
