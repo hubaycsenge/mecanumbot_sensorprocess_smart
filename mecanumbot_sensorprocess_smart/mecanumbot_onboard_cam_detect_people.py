@@ -146,12 +146,12 @@ class DeepStreamPersonDetectNode(Node):
                 except StopIteration:
                     break
                 
-                self.get_logger().info(f"Object class_id: {obj_meta.class_id}, confidence: {obj_meta.confidence}")
-                self.get_logger().info(f"Object bounding box: ({obj_meta.rect_params.left}, {obj_meta.rect_params.top}, {obj_meta.rect_params.width}, {obj_meta.rect_params.height})")
-                self.get_logger().info(f"Object mask_params size: {obj_meta.mask_params.size}")
-                self.get_logger().info(f'Object mask_params data:{obj_meta.mask_params.data}')
+                #self.get_logger().info(f"Object class_id: {obj_meta.class_id}, confidence: {obj_meta.confidence}")
+                #self.get_logger().info(f"Object bounding box: ({obj_meta.rect_params.left}, {obj_meta.rect_params.top}, {obj_meta.rect_params.width}, {obj_meta.rect_params.height})")
+                #self.get_logger().info(f"Object mask_params size: {obj_meta.mask_params.size}")
+                #self.get_logger().info(f'Object mask_params data:{obj_meta.mask_params.data}')
                 #self.get_logger().info(f"Object rect_params data: {obj_meta.rect_params.left}, {obj_meta.rect_params.top}, {obj_meta.rect_params.width}, {obj_meta.rect_params.height}")
-                self.get_logger().info(f'object text params: {obj_meta.text_params.display_text}')
+                #self.get_logger().info(f'object text params: {obj_meta.text_params.display_text}')
                 #self.get_logger().info(f'misc_params: {obj_meta.misc_obj_info}')
                 #self.get_logger().info(f'object user meta: {obj_meta.obj_user_meta_list.base_meta.batch_meta}, {obj_meta.obj_user_meta_list.base_meta.uContext}')
                 #self.get_logger().info(f'Classifier params: {obj_meta.classifier_meta_list.num_labels},{obj_meta.classifier_meta_list.num_classes},{obj_meta.classifier_meta_list.base_meta.batch_meta}')
@@ -160,12 +160,12 @@ class DeepStreamPersonDetectNode(Node):
                 
                 # Check if the C++ parser successfully injected data into the mask array
                 if mask_params.size > 0:
-                    self.get_logger().info(f">>> Keypoints found in mask_params!")
+                    #self.get_logger().info(f">>> Keypoints found in mask_params!")
                     
                     # get_mask_array() natively returns a NumPy array!
                     # We just flatten it (if it isn't already) and reshape it back into our 17x3 matrix
                     raw_data = mask_params.get_mask_array()
-                    self.get_logger().info(f"Raw keypoint data shape: {raw_data.shape}, dtype: {raw_data.dtype}")
+                    #self.get_logger().info(f"Raw keypoint data shape: {raw_data.shape}, dtype: {raw_data.dtype}")
                     keypoints = np.array(raw_data).flatten()[:51].reshape((17, 3))
                     
                     person_msg = CamPersonDetection()
@@ -191,7 +191,7 @@ class DeepStreamPersonDetectNode(Node):
                     person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][0] / self.camera_width, keypoints[16][1] / self.camera_height)
                     
                     # (Remember to port over your bound_angle_min/max calculations here if you still need them!)
-                    
+                    self.get_logger().info(f"Detected person with keypoints: {person_msg.keypoints}")
                     detected_people.append(person_msg)
                 else:
                     self.get_logger().warn("Object detected, but no keypoint mask_params were found!")
