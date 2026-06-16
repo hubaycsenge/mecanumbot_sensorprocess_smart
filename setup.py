@@ -15,6 +15,7 @@ setup(
         ('share/' + package_name + '/config',  glob('config/*')),
         ('share/' + package_name + '/models',  glob('models/*')),
         ('share/' + package_name + '/launch',  glob('launch/*')),
+        ('share/' + package_name + '/deepstream_config',  glob('deepstream_config/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
