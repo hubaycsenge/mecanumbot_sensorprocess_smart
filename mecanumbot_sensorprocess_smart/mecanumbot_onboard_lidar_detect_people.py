@@ -56,7 +56,7 @@ class OrinTensorRTWrapper:
         self.ort_session = ort.InferenceSession(onnx_path, providers=providers)
         self.input_name = self.ort_session.get_inputs()[0].name
         
-    def __call__(self, x):
+    def __call__(self, x, *args, **kwargs): # <--- FIX: Accept extra arguments like 'testing=True'
         # DR-SPAAM passes a PyTorch tensor. Convert to numpy for ONNX.
         np_x = x.detach().cpu().numpy()
         
@@ -68,9 +68,9 @@ class OrinTensorRTWrapper:
 
     def eval(self):
         pass # Dummy method to keep the DR-SPAAM Wrapper happy
-
-# ------------------------------------------------------------------------------
-
+        
+    def to(self, *args, **kwargs):
+        return self # Dummy method in case it tries to cast model.to('cpu')
 class Track:
     """Represents a single tracked person."""
     def __init__(self, detection, track_id):
