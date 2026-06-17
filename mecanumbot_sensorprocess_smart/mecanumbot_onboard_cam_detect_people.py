@@ -116,7 +116,8 @@ class DeepStreamPersonDetectNode(Node):
             self.debug_image_pub = self.create_publisher(CompressedImage, 'cam_people_detections/debug_image/compressed', 10)
 
         self.people_msg =  CamPersonDetectionArray()
-        self.people_msg.header.frame_id = f'{namespace}/head_link'
+        ros_namespace = self.get_namespace().strip('/')
+        self.people_msg.header.frame_id = f'{ros_namespace}/head_link' if ros_namespace else 'head_link'
 
         self.pipeline.set_state(Gst.State.PLAYING)
         self.get_logger().info("DeepStream Pipeline Running!")
