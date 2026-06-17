@@ -42,12 +42,11 @@ class OrinTensorRTWrapper:
     def __init__(self, onnx_path):
         import onnxruntime as ort
         
-        # Configure TensorRT for Orin Nano (Enables FP16 for massive speedup)
         providers = [
             ('TensorrtExecutionProvider', {
                 'device_id': 0,
-                'trt_fp16_enable': True,          # Crucial for Jetson Orin Nano
-                'trt_engine_cache_enable': True,  # Caches the TRT engine on disk to speed up future boots
+                'trt_fp16_enable': True,
+                'trt_engine_cache_enable': True,
                 'trt_engine_cache_path': '/tmp/trt_cache'
             }),
             'CUDAExecutionProvider'
@@ -56,21 +55,19 @@ class OrinTensorRTWrapper:
         self.ort_session = ort.InferenceSession(onnx_path, providers=providers)
         self.input_name = self.ort_session.get_inputs()[0].name
         
-    def __call__(self, x, *args, **kwargs): # <--- FIX: Accept extra arguments like 'testing=True'
-        # DR-SPAAM passes a PyTorch tensor. Convert to numpy for ONNX.
+    def __call__(self, x, testing=False, *args, **kwargs):
+        return self.forward(x)
+
+    def forward(self, x, testing=False, *args, **kwargs):
         np_x = x.detach().cpu().numpy()
-        
-        # Run TensorRT Inference
         ort_outs = self.ort_session.run(None, {self.input_name: np_x})
-        
-        # Convert back to PyTorch tensor so DR-SPAAM's post-processing doesn't break
         return torch.from_numpy(ort_outs[0])
 
-    def eval(self):
-        pass # Dummy method to keep the DR-SPAAM Wrapper happy
-        
-    def to(self, *args, **kwargs):
-        return self # Dummy method in case it tries to cast model.to('cpu')
+    def eval(self): pass
+    def to(self, *args, **kwargs): return self
+    def cuda(self, *args, **kwargs): return self
+    def cpu(self, *args, **kwargs): return self
+# ------------------------------------------------------------------------------
 class Track:
     """Represents a single tracked person."""
     def __init__(self, detection, track_id):
