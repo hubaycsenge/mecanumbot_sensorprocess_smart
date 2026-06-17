@@ -3,6 +3,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import CompressedImage
 from mecanumbot_msgs.msg import CamPersonDetectionArray, CamPersonDetection
+from std_msgs.msg import Float32 as Float
 from geometry_msgs.msg import Pose
 import os
 import gi
@@ -205,8 +206,8 @@ class DeepStreamPersonDetectNode(Node):
                     X_min = keypoints[:, 1].min() / self.camera_width
                     X_max = keypoints[:, 1].max() / self.camera_width
 
-                    person_msg.bound_angle_min = self.cam_to_angle(X_min)
-                    person_msg.bound_angle_max = self.cam_to_angle(X_max)
+                    person_msg.bound_angle_min = Float(data=self.cam_to_angle(X_min))
+                    person_msg.bound_angle_max = Float(data=self.cam_to_angle(X_max))
 
                     detected_people.append(person_msg)
                     if self.debug_mode:
