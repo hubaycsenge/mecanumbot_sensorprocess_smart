@@ -44,6 +44,7 @@ class DeepStreamPersonDetectNode(Node):
 
         self.camera_width = self.get_parameter('camera_params.camera_width').value
         self.camera_height = self.get_parameter('camera_params.camera_height').value
+        self.camera_fov = self.get_parameter('camera_params.camera_fov').value
         self.from_topic = self.get_parameter('from_topic').value
         self.webcam_device = self.get_parameter('webcam_device').value
         self.Y_padding = (self.camera_width - self.camera_height)/2
@@ -106,12 +107,17 @@ class DeepStreamPersonDetectNode(Node):
         probe_pad = self.capsfilter_out.get_static_pad("src")
         probe_pad.add_probe(Gst.PadProbeType.BUFFER, self.metadata_probe, 0)
 
+        self.camera_right_yaw = -self.camera_fov / 2
+        self.camera_left_yaw = self.camera_fov / 2
+
         # Publishers
         self.people_pub = self.create_publisher(CamPersonDetectionArray, 'cam_people_detections', 10)
         if self.debug_mode:
             self.debug_image_pub = self.create_publisher(CompressedImage, 'cam_people_detections/debug_image/compressed', 10)
 
-        # Start Pipeline
+        self.people_msg =  CamPersonDetectionArray()
+        self.people_msg.header.frame_id = f'{namespace}/head_link'
+
         self.pipeline.set_state(Gst.State.PLAYING)
         self.get_logger().info("DeepStream Pipeline Running!")
 
@@ -134,6 +140,13 @@ class DeepStreamPersonDetectNode(Node):
         msg.position.y = float(y)
         msg.position.z = 0.0
         return msg
+    
+    def cam_to_angle(self, X):
+        X_inv = 1 - X # Invert X to match the robot's coordinate system rather than the camera's coordinate system
+        angle = (1 - X_inv) * self.camera_right_yaw + X_inv * self.camera_left_yaw # direction: right to left increase
+        self.get_logger().info(f"####### Calculated angle: {angle} from X: {X} with camera FOV: {math.degrees(self.camera_fov)} degrees")
+        return angle
+
 
     def metadata_probe(self, pad, info, u_data):
         gst_buffer = info.get_buffer()
@@ -150,10 +163,7 @@ class DeepStreamPersonDetectNode(Node):
             except StopIteration:
                 break
 
-            # --- IMAGE EXTRACTION ---
-            # Retrieve the raw GPU buffer as an RGBA Numpy Array
             n_frame = pyds.get_nvds_buf_surface(hash(gst_buffer), frame_meta.batch_id)
-            # Make a copy into CPU memory so OpenCV can manipulate it safely
             frame_copy = np.array(n_frame, copy=True, order='C')
             debug_img = cv2.cvtColor(frame_copy, cv2.COLOR_RGBA2BGR)
 
@@ -190,6 +200,12 @@ class DeepStreamPersonDetectNode(Node):
                     person_msg.keypoints.right_knee = self.XYN_to_Pose(keypoints[14][1] / self.camera_width, (keypoints[14][2] - self.Y_padding) / self.camera_height)
                     person_msg.keypoints.left_ankle = self.XYN_to_Pose(keypoints[15][1] / self.camera_width, (keypoints[15][2] - self.Y_padding) / self.camera_height)
                     person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][1] / self.camera_width, (keypoints[16][2] - self.Y_padding) / self.camera_height)
+                    
+                    X_min = keypoints[:, 1].min() / self.camera_width
+                    X_max = keypoints[:, 1].max() / self.camera_width
+
+                    person_msg.bound_angle_min = self.cam_to_angle(X_min)
+                    person_msg.bound_angle_max = self.cam_to_angle(X_max)
 
                     detected_people.append(person_msg)
                     if self.debug_mode:
@@ -241,10 +257,10 @@ class DeepStreamPersonDetectNode(Node):
         # Publish the Metadata back to ROS
         if detected_people:
             self.get_logger().info(f"Detected {len(detected_people)} people in the frame.")
-            msg_array = CamPersonDetectionArray()
-            msg_array.header.stamp = self.get_clock().now().to_msg()
-            msg_array.people = detected_people
-            self.people_pub.publish(msg_array)
+            
+            self.people_msg.header.stamp = self.get_clock().now().to_msg()
+            self.people_msg.people = detected_people
+            self.people_pub.publish(self.people_msg)
 
         return Gst.PadProbeReturn.OK
 
