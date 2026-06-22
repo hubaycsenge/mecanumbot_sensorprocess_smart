@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSDurabilityPolicy
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, ReliabilityPolicy
 from mecanumbot_msgs.msg import CamPersonDetectionArray
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseArray, Pose, Point, PoseWithCovarianceStamped
@@ -12,6 +12,11 @@ import numpy as np
 class PersonLocateNode(Node):
     def __init__(self):
         super().__init__('mecanumbot_locate_detections')
+
+        qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.BEST_EFFORT
+        )
         self.namespace = self.get_namespace().strip('/')
 
         self.tf_buffer = Buffer()
@@ -27,9 +32,9 @@ class PersonLocateNode(Node):
         self.cam_people_sub = self.create_subscription(
             CamPersonDetectionArray, 'cam_people_detections', self.cam_people_callback, 10)
         self.laser_people_sub = self.create_subscription(
-            PoseArray, 'lidar_detected_people', self.lidar_people_callback, 10)
+            PoseArray, 'dets', self.lidar_people_callback, 10)
         self.scan_sub = self.create_subscription(
-            LaserScan, 'scan', self.scan_callback, 10)
+            LaserScan, 'scan', self.scan_callback, qos)
             
         # Map sub uses Transient Local QoS because maps are usually published once
         map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
@@ -105,8 +110,8 @@ class PersonLocateNode(Node):
 
     def arrange_with_scan_dets(self, person):
         # Ensure correct min/max bounds even if wrapped
-        ang_min = min(person.bound_angle_min, person.bound_angle_max)
-        ang_max = max(person.bound_angle_min, person.bound_angle_max)
+        ang_min = min(person.bound_angle_min.data, person.bound_angle_max.data)
+        ang_max = max(person.bound_angle_min.data, person.bound_angle_max.data)
         
         pose_candidates = []
         for laser_pose, angle in zip(self.laser_detections, self.laser_angles):
@@ -124,8 +129,8 @@ class PersonLocateNode(Node):
         ang_inc = self.scan_data.angle_increment
         
         # Order the person bounding angles correctly
-        p_min = min(person.bound_angle_min, person.bound_angle_max)
-        p_max = max(person.bound_angle_min, person.bound_angle_max)
+        p_min = min(person.bound_angle_min.data,person.bound_angle_max.data)
+        p_max = max(person.bound_angle_min.data,person.bound_angle_max.data)
 
         # Calculate indices and clamp them to array bounds to prevent IndexError
         idx_min = int((p_min - ang_min_scan) / ang_inc)
