@@ -4,7 +4,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import CompressedImage
 from mecanumbot_msgs.msg import CamPersonDetectionArray, CamPersonDetection
 from std_msgs.msg import Float32 as Float
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose,PoseArray, Point
 import os
 import gi
 gi.require_version('Gst', '1.0')
@@ -110,9 +110,14 @@ class DeepStreamPersonDetectNode(Node):
 
         self.camera_right_yaw = -self.camera_fov / 2
         self.camera_left_yaw = self.camera_fov / 2
-
+        
+        self.people_left_FOV = PoseArray()
+        self.people_left_FOV.header.frame_id = f'{self.get_namespace().strip("/")}/head_link' if self.get_namespace().strip('/') else 'head_link'
+        self.people_right_FOV = PoseArray()
+        self.people_right_FOV.header.frame_id = f'{self.get_namespace().strip("/")}/head_link' if self.get_namespace().strip('/') else 'head_link'
         # Publishers
         self.people_pub = self.create_publisher(CamPersonDetectionArray, 'cam_people_detections', 10)
+        
         if self.debug_mode:
             self.debug_image_pub = self.create_publisher(CompressedImage, 'cam_people_detections/debug_image/compressed', 10)
 
@@ -148,7 +153,6 @@ class DeepStreamPersonDetectNode(Node):
         angle = (1 - X_inv) * self.camera_right_yaw + X_inv * self.camera_left_yaw # direction: right to left increase
         #self.get_logger().info(f"####### Calculated angle: {angle} from X: {X} with camera FOV: {math.degrees(self.camera_fov)} degrees")
         return angle
-
 
     def metadata_probe(self, pad, info, u_data):
         gst_buffer = info.get_buffer()
@@ -203,12 +207,11 @@ class DeepStreamPersonDetectNode(Node):
                     person_msg.keypoints.left_ankle = self.XYN_to_Pose(keypoints[15][1] / self.camera_width, (keypoints[15][2] - self.Y_padding) / self.camera_height)
                     person_msg.keypoints.right_ankle = self.XYN_to_Pose(keypoints[16][1] / self.camera_width, (keypoints[16][2] - self.Y_padding) / self.camera_height)
                     
-                    X_min = keypoints[:, 1].min() / self.camera_width
-                    X_max = keypoints[:, 1].max() / self.camera_width
+                    X_min = self.cam_to_angle(keypoints[:, 1].min() / self.camera_width)
+                    X_max = self.cam_to_angle(keypoints[:, 1].max() / self.camera_width)
 
-                    person_msg.bound_angle_min = Float(data=self.cam_to_angle(X_min))
-                    person_msg.bound_angle_max = Float(data=self.cam_to_angle(X_max))
-
+                    person_msg.bound_angle_min = Float(data=X_min)
+                    person_msg.bound_angle_max = Float(data=X_max)
                     detected_people.append(person_msg)
                     if self.debug_mode:
                         # --- DRAWING THE DEBUG VISUALIZATION ---

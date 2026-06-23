@@ -70,6 +70,8 @@ class PersonDetectNode(Node):
         self.webcam_timer = None
         self.robot_pose = None
         
+        self.left_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/left_FOV', 10)
+        self.right_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/right_FOV', 10)
 
         # TF2 for frame transformations
         self.tf_buffer = Buffer()

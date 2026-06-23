@@ -6,6 +6,7 @@ from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseArray, Pose, Point, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
 from tf2_ros import TransformListener, Buffer
+from transforms3d import euler2quat
 import math
 import numpy as np
 
@@ -51,6 +52,13 @@ class PersonLocateNode(Node):
         self.map_data = None
         self.map_array = None
         self.amcl_pose = None
+
+        self.people_left_FOV = PoseArray()
+        self.people_left_FOV.header.frame_id = f'{self.get_namespace().strip("/")}/head_link' if self.get_namespace().strip('/') else 'head_link'
+        self.people_right_FOV = PoseArray()
+        self.people_right_FOV.header.frame_id = f'{self.get_namespace().strip("/")}/head_link' if self.get_namespace().strip('/') else 'head_link'
+        self.people_left_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/left_FOV', 10)
+        self.people_right_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/right_FOV', 10)
         
         self.get_logger().info("Person Locate Node has started.")
 
@@ -68,6 +76,14 @@ class PersonLocateNode(Node):
         self.map_data = msg
         # Convert map 1D array to 2D numpy array for fast spatial lookups
         self.map_array = np.array(msg.data, dtype=np.int8).reshape((msg.info.height, msg.info.width))
+
+    def fill_bound_angle(self, X_min, X_max):
+       min_pose = self.amcl_pose
+       max_pose = self.amcl_pose
+       min_pose.orientation += euler2quat(0, 0, X_min)
+       max_pose.orientation += euler2quat(0, 0, X_max)
+       self.people_left_FOV.poses.append(min_pose)
+       self.people_right_FOV.poses.append(max_pose)    
 
     def lidar_people_callback(self, msg):
         try:
@@ -266,12 +282,21 @@ class PersonLocateNode(Node):
             if person_pose is not None:
                 person_pose = self.handle_map_occlusion(person_pose)
                 fused_poses.poses.append(person_pose)
-                
+
+            self.fill_bound_angle(person.bound_angle_min.data, person.bound_angle_max.data)   
         # Publish combined array
         if fused_poses.poses:
             self.get_logger().info(f"Publishing {len(fused_poses.poses)} fused detections.")
             self.people_pub.publish(fused_poses)
-
+        if self.people_left_FOV.poses:
+            self.people_left_FOV.stamp = self.cam_stamp 
+            self.people_left_FOV_pub.publish(self.people_left_FOV)
+            self.people_left_FOV.poses.clear()
+        if self.people_right_FOV.poses:
+            self.people_right_FOV.stamp = self.cam_stamp
+            self.people_right_FOV_pub.publish(self.people_right_FOV)
+            self.people_right_FOV.poses.clear()
+            
 def main(args=None):
     rclpy.init(args=args)
     node = PersonLocateNode()
