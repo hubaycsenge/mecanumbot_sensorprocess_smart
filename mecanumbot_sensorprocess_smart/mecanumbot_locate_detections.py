@@ -127,7 +127,7 @@ class PersonLocateNode(Node):
             w=q_final_array[3]
         )
         # 3. Multiply them (Scipy supports the * operator)
-        r_max_map = r_map_to_base * r_max_base
+        r_max_map = r_max_base * r_map_to_base
 
         # 4. Convert back to a raw array [x, y, z, w] and build your final object
         q_final_array = r_max_map.as_quat()
@@ -137,6 +137,7 @@ class PersonLocateNode(Node):
             z=q_final_array[2], 
             w=q_final_array[3]
         )
+
         # 6. Assign the new values back to our copied ROS poses (W is q[0])
         min_pose.orientation.w = q_min_map.w
         min_pose.orientation.x = q_min_map.x
