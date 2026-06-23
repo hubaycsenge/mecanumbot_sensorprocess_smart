@@ -1,5 +1,6 @@
 import rclpy
 from rclpy.node import Node
+from scipy.spatial.transform import Rotation as R
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, ReliabilityPolicy
 from mecanumbot_msgs.msg import CamPersonDetectionArray
 from sensor_msgs.msg import LaserScan
@@ -100,20 +101,52 @@ class PersonLocateNode(Node):
 
         # 5. Convert back to quaternions: returns [w, x, y, z]
         q_min = euler2quat(0, 0, X_min)
-        q_min = Quaternion(w=q_min[0], x=q_min[1], y=q_min[2], z=q_min[3]) * q_map_to_base
+        q_min = Quaternion(w=q_min[0], x=q_min[1], y=q_min[2], z=q_min[3])
         q_max = euler2quat(0, 0, X_max)
-        q_max = Quaternion(w=q_max[0], x=q_max[1], y=q_max[2], z=q_max[3]) * q_map_to_base
+        q_max = Quaternion(w=q_max[0], x=q_max[1], y=q_max[2], z=q_max[3]) 
 
+                # 1. Create Scipy Rotation objects directly from Euler angles
+        # 'xyz' means extrinsic rotations; 'z' is yaw.
+        r_min_base = R.from_euler('xyz', [0, 0, X_min])
+        r_max_base = R.from_euler('xyz', [0, 0, X_max])
+
+        # 2. Create the Map-to-Base Rotation object
+        # (Assuming you extracted the quaternion [x, y, z, w] from your TF tree)
+        r_map_to_base = R.from_quat([q_msg.x, q_msg.y, q_msg.z, q_msg.w])
+
+        # 3. Multiply them (Scipy supports the * operator)
+        r_min_map = r_map_to_base * r_min_base
+        r_max_map = r_map_to_base * r_max_base
+
+        # 4. Convert back to a raw array [x, y, z, w] and build your final object
+        q_final_array = r_min_map.as_quat()
+        q_min_map = Quaternion(
+            x=q_final_array[0], 
+            y=q_final_array[1], 
+            z=q_final_array[2], 
+            w=q_final_array[3]
+        )
+        # 3. Multiply them (Scipy supports the * operator)
+        r_max_map = r_map_to_base * r_max_base
+
+        # 4. Convert back to a raw array [x, y, z, w] and build your final object
+        q_final_array = r_max_map.as_quat()
+        q_max_map = Quaternion(
+            x=q_final_array[0], 
+            y=q_final_array[1], 
+            z=q_final_array[2], 
+            w=q_final_array[3]
+        )
         # 6. Assign the new values back to our copied ROS poses (W is q[0])
-        min_pose.orientation.w = q_min[0]
-        min_pose.orientation.x = q_min[1]
-        min_pose.orientation.y = q_min[2]
-        min_pose.orientation.z = q_min[3]
+        min_pose.orientation.w = q_min_map.w
+        min_pose.orientation.x = q_min_map.x
+        min_pose.orientation.y = q_min_map.y
+        min_pose.orientation.z = q_min_map.z
 
-        max_pose.orientation.w = q_max[0]
-        max_pose.orientation.x = q_max[1]
-        max_pose.orientation.y = q_max[2]
-        max_pose.orientation.z = q_max[3]
+        max_pose.orientation.w = q_max_map.w
+        max_pose.orientation.x = q_max_map.x
+        max_pose.orientation.y = q_max_map.y
+        max_pose.orientation.z = q_max_map.z
 
         # 7. Append to your PoseArrays
         self.people_left_FOV.poses.append(min_pose)
