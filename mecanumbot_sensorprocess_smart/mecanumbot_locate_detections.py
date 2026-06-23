@@ -55,6 +55,7 @@ class PersonLocateNode(Node):
         self.get_logger().info("Person Locate Node has started.")
 
     def cam_people_callback(self, msg):
+        self.cam_stamp = msg.header.stamp
         self.cam_detections = msg.people
 
     def scan_callback(self, msg):
@@ -248,7 +249,7 @@ class PersonLocateNode(Node):
             return
         
         fused_poses = PoseArray()
-        fused_poses.header.stamp = self.get_clock().now().to_msg()
+        fused_poses.header.stamp = self.cam_stamp
         fused_poses.header.frame_id = 'mecanumbot/base_link'
 
         for person in self.cam_detections:
