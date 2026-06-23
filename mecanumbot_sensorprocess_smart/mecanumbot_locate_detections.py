@@ -325,12 +325,12 @@ class PersonLocateNode(Node):
             self.people_pub.publish(fused_poses)
         if self.people_left_FOV.poses:
             self.get_logger().info(f"Publishing {len(self.people_left_FOV.poses)} left FOV detections.")
-            self.people_left_FOV.stamp = self.cam_stamp 
+            self.people_left_FOV.header.stamp = self.cam_stamp 
             self.people_left_FOV_pub.publish(self.people_left_FOV)
             self.people_left_FOV.poses.clear()
         if self.people_right_FOV.poses:
             self.get_logger().info(f"Publishing {len(self.people_right_FOV.poses)} right FOV detections.")
-            self.people_right_FOV.stamp = self.cam_stamp
+            self.people_right_FOV.header.stamp = self.cam_stamp
             self.people_right_FOV_pub.publish(self.people_right_FOV)
             self.people_right_FOV.poses.clear()
             
