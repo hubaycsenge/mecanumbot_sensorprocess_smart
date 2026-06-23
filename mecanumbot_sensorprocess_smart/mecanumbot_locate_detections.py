@@ -98,13 +98,10 @@ class PersonLocateNode(Node):
         # 3. Convert current quaternion to Euler angles (returns roll, pitch, yaw)
         roll, pitch, yaw = quat2euler(q_current)
 
-        # 4. Add the relative yaw angles
-        yaw_min = yaw + X_min
-        yaw_max = yaw + X_max
 
         # 5. Convert back to quaternions: returns [w, x, y, z]
-        q_min = euler2quat(roll, pitch, yaw_min)
-        q_max = euler2quat(roll, pitch, yaw_max)
+        q_min = euler2quat(roll, pitch, X_min)
+        q_max = euler2quat(roll, pitch, X_max)
 
         # 6. Assign the new values back to our copied ROS poses (W is q[0])
         min_pose.orientation.w = q_min[0]
