@@ -6,7 +6,7 @@ from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseArray, Pose, Point, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
 from tf2_ros import TransformListener, Buffer
-from transforms3d import euler2quat
+from transforms3d.euler import euler2quat
 import math
 import numpy as np
 
