@@ -247,7 +247,7 @@ class PersonLocateNode(Node):
     def merge_detections(self):
         if not self.cam_detections:
             return
-        
+        self.get_logger().info(f"Fusing {len(self.cam_detections)} camera detections with {len(self.laser_detections)} LiDAR detections.")
         fused_poses = PoseArray()
         fused_poses.header.stamp = self.cam_stamp
         fused_poses.header.frame_id = 'mecanumbot/base_link'
@@ -267,6 +267,7 @@ class PersonLocateNode(Node):
                 
         # Publish combined array
         if fused_poses.poses:
+            self.get_logger().info(f"Publishing {len(fused_poses.poses)} fused detections.")
             self.people_pub.publish(fused_poses)
 
 def main(args=None):

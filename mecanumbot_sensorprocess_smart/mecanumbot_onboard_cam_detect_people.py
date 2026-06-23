@@ -146,7 +146,7 @@ class DeepStreamPersonDetectNode(Node):
     def cam_to_angle(self, X):
         X_inv = 1 - X # Invert X to match the robot's coordinate system rather than the camera's coordinate system
         angle = (1 - X_inv) * self.camera_right_yaw + X_inv * self.camera_left_yaw # direction: right to left increase
-        self.get_logger().info(f"####### Calculated angle: {angle} from X: {X} with camera FOV: {math.degrees(self.camera_fov)} degrees")
+        #self.get_logger().info(f"####### Calculated angle: {angle} from X: {X} with camera FOV: {math.degrees(self.camera_fov)} degrees")
         return angle
 
 
@@ -223,7 +223,7 @@ class DeepStreamPersonDetectNode(Node):
                         for p1, p2 in SKELETON_CONNECTIONS:
                             conf_p1, x_p1, y_p1 = keypoints[p1]
                             conf_p2, x_p2, y_p2 = keypoints[p2]
-                            self.get_logger().info(f"Drawing line between keypoints {x_p1};{y_p1} and {x_p2};{y_p2} with confidences {conf_p1:.2f}, {conf_p2:.2f}")
+                            #self.get_logger().info(f"Drawing line between keypoints {x_p1};{y_p1} and {x_p2};{y_p2} with confidences {conf_p1:.2f}, {conf_p2:.2f}")
                             # Only draw the line if both keypoints are fairly confident
                             if conf_p1 > 0.2 and conf_p2 > 0.2:
                                 cv2.line(debug_img, (int(x_p1), int(y_p1- self.Y_padding)), (int(x_p2), int(y_p2- self.Y_padding)), (0, 255, 255), 2)
@@ -258,7 +258,7 @@ class DeepStreamPersonDetectNode(Node):
 
         # Publish the Metadata back to ROS
         if detected_people:
-            self.get_logger().info(f"Detected {len(detected_people)} people in the frame.")           
+            #self.get_logger().info(f"Detected {len(detected_people)} people in the frame.")           
             self.people_msg.header.stamp = self.get_clock().now().to_msg()
             self.people_msg.people = detected_people
             self.people_pub.publish(self.people_msg)
