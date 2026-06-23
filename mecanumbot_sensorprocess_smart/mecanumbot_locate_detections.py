@@ -78,16 +78,47 @@ class PersonLocateNode(Node):
         self.map_array = np.array(msg.data, dtype=np.int8).reshape((msg.info.height, msg.info.width))
 
     def fill_bound_angle(self, X_min, X_max):
-       if self.amcl_pose is None:
-           self.get_logger().warn("AMCL pose is not available yet. Cannot fill FOV bounds.")
-           return
-       min_pose = self.amcl_pose
-       max_pose = self.amcl_pose
-       min_pose.orientation += euler2quat(0, 0, X_min)
-       max_pose.orientation += euler2quat(0, 0, X_max)
-       self.people_left_FOV.poses.append(min_pose)
-       self.people_right_FOV.poses.append(max_pose)    
+        if self.amcl_pose is None:
+            self.get_logger().warn("AMCL pose is not available yet. Cannot fill FOV bounds.")
+            return
 
+        # 1. Use deepcopy so we don't accidentally modify the actual amcl_pose
+        min_pose = copy.deepcopy(self.amcl_pose)
+        max_pose = copy.deepcopy(self.amcl_pose)
+
+        # 2. Extract current orientation for transforms3d: [w, x, y, z] (W is FIRST!)
+        q_current = [
+            self.amcl_pose.orientation.w,
+            self.amcl_pose.orientation.x,
+            self.amcl_pose.orientation.y,
+            self.amcl_pose.orientation.z
+        ]
+
+        # 3. Convert current quaternion to Euler angles (returns roll, pitch, yaw)
+        roll, pitch, yaw = transforms3d.euler.quat2euler(q_current)
+
+        # 4. Add the relative yaw angles
+        yaw_min = yaw + X_min
+        yaw_max = yaw + X_max
+
+        # 5. Convert back to quaternions: returns [w, x, y, z]
+        q_min = transforms3d.euler.euler2quat(roll, pitch, yaw_min)
+        q_max = transforms3d.euler.euler2quat(roll, pitch, yaw_max)
+
+        # 6. Assign the new values back to our copied ROS poses (W is q[0])
+        min_pose.orientation.w = q_min[0]
+        min_pose.orientation.x = q_min[1]
+        min_pose.orientation.y = q_min[2]
+        min_pose.orientation.z = q_min[3]
+
+        max_pose.orientation.w = q_max[0]
+        max_pose.orientation.x = q_max[1]
+        max_pose.orientation.y = q_max[2]
+        max_pose.orientation.z = q_max[3]
+
+        # 7. Append to your PoseArrays
+        self.people_left_FOV.poses.append(min_pose)
+        self.people_right_FOV.poses.append(max_pose)
     def lidar_people_callback(self, msg):
         try:
             # Safely fetch transform, defaulting to base_scan if header is missing
