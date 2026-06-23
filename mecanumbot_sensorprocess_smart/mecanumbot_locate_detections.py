@@ -162,7 +162,7 @@ class PersonLocateNode(Node):
         
         x = dist_median * math.cos(center_angle)
         y = dist_median * math.sin(center_angle)
-        
+        self.get_logger().info(f"Extrapolated detection at local coordinates: ({x:.2f}, {y:.2f})")
         return Pose(position=Point(x=x, y=y, z=0.0))
 
     def handle_map_occlusion(self, local_pose):
@@ -194,6 +194,7 @@ class PersonLocateNode(Node):
         gy = int((hit_y - oy) / res)
         
         if not (0 <= gx < width and 0 <= gy < height):
+            self.get_logger().warn("Detection is out of map bounds, skipping occlusion check.")
             return local_pose # Out of map bounds
             
         # 4. Check if the cell is an obstacle (> 50 confidence)
@@ -241,7 +242,7 @@ class PersonLocateNode(Node):
                 f"({corrected_pose.position.x:.2f}, {corrected_pose.position.y:.2f})"
             )
             return corrected_pose
-            
+        self.get_logger().info("No wall occlusion detected, keeping original pose.")
         return local_pose
         
     def merge_detections(self):
@@ -259,6 +260,7 @@ class PersonLocateNode(Node):
             # 2. Fallback: Extrapolate from raw scan
             if person_pose is None:
                 person_pose = self.extrap_from_raw_scan(person)
+                
                 
             # 3. Validation: Verify pose isn't on a mapped wall
             if person_pose is not None:
