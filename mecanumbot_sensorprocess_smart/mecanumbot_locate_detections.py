@@ -87,21 +87,10 @@ class PersonLocateNode(Node):
         min_pose = copy.deepcopy(self.amcl_pose)
         max_pose = copy.deepcopy(self.amcl_pose)
 
-        # 2. Extract current orientation for transforms3d: [w, x, y, z] (W is FIRST!)
-        q_current = [
-            self.amcl_pose.orientation.w,
-            self.amcl_pose.orientation.x,
-            self.amcl_pose.orientation.y,
-            self.amcl_pose.orientation.z
-        ]
-
-        # 3. Convert current quaternion to Euler angles (returns roll, pitch, yaw)
-        roll, pitch, yaw = quat2euler(q_current)
-
 
         # 5. Convert back to quaternions: returns [w, x, y, z]
-        q_min = euler2quat(roll, pitch, X_min)
-        q_max = euler2quat(roll, pitch, X_max)
+        q_min = euler2quat(0, 0, X_min)
+        q_max = euler2quat(0, 0, X_max)
 
         # 6. Assign the new values back to our copied ROS poses (W is q[0])
         min_pose.orientation.w = q_min[0]
