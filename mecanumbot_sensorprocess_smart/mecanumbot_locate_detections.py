@@ -78,6 +78,9 @@ class PersonLocateNode(Node):
         self.map_array = np.array(msg.data, dtype=np.int8).reshape((msg.info.height, msg.info.width))
 
     def fill_bound_angle(self, X_min, X_max):
+       if self.amcl_pose is None:
+           self.get_logger().warn("AMCL pose is not available yet. Cannot fill FOV bounds.")
+           return
        min_pose = self.amcl_pose
        max_pose = self.amcl_pose
        min_pose.orientation += euler2quat(0, 0, X_min)
