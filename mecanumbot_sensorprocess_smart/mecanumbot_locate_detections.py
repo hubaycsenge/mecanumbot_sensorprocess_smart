@@ -3,7 +3,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, ReliabilityPolicy
 from mecanumbot_msgs.msg import CamPersonDetectionArray
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PoseArray, Pose, Point, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseArray, Pose, Point, PoseWithCovarianceStamped, Quaternion
 from nav_msgs.msg import OccupancyGrid
 from tf2_ros import TransformListener, Buffer
 from transforms3d.euler import euler2quat,quat2euler
@@ -60,6 +60,9 @@ class PersonLocateNode(Node):
         self.people_right_FOV.header.frame_id = 'map' if self.get_namespace().strip('/') else 'map'
         self.people_left_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/left_FOV', 10)
         self.people_right_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/right_FOV', 10)
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         
         self.get_logger().info("Person Locate Node has started.")
 
@@ -83,6 +86,13 @@ class PersonLocateNode(Node):
             self.get_logger().warn("AMCL pose is not available yet. Cannot fill FOV bounds.")
             return
 
+
+        t = self.tf_buffer.lookup_transform(
+                'map',
+                'mecanumbot/head_link',
+                rclpy.time.Time())
+        q_msg = t.transform.rotation
+        q_map_to_base = Quaternion(w=q_msg.w, x=q_msg.x, y=q_msg.y, z=q_msg.z)
         # 1. Use deepcopy so we don't accidentally modify the actual amcl_pose
         min_pose = copy.deepcopy(self.amcl_pose)
         max_pose = copy.deepcopy(self.amcl_pose)
@@ -90,7 +100,9 @@ class PersonLocateNode(Node):
 
         # 5. Convert back to quaternions: returns [w, x, y, z]
         q_min = euler2quat(0, 0, X_min)
+        q_min = Quaternion(w=q_min[0], x=q_min[1], y=q_min[2], z=q_min[3]) * q_map_to_base
         q_max = euler2quat(0, 0, X_max)
+        q_max = Quaternion(w=q_max[0], x=q_max[1], y=q_max[2], z=q_max[3]) * q_map_to_base
 
         # 6. Assign the new values back to our copied ROS poses (W is q[0])
         min_pose.orientation.w = q_min[0]
