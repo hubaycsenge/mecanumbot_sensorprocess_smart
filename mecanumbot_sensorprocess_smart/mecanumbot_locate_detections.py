@@ -55,9 +55,9 @@ class PersonLocateNode(Node):
         self.amcl_pose = None
 
         self.people_left_FOV = PoseArray()
-        self.people_left_FOV.header.frame_id = f'{self.get_namespace().strip("/")}/head_link' if self.get_namespace().strip('/') else 'head_link'
+        self.people_left_FOV.header.frame_id = 'map' if self.get_namespace().strip('/') else 'map'
         self.people_right_FOV = PoseArray()
-        self.people_right_FOV.header.frame_id = f'{self.get_namespace().strip("/")}/head_link' if self.get_namespace().strip('/') else 'head_link'
+        self.people_right_FOV.header.frame_id = 'map' if self.get_namespace().strip('/') else 'map'
         self.people_left_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/left_FOV', 10)
         self.people_right_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/right_FOV', 10)
         
