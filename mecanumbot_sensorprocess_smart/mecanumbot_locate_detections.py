@@ -9,6 +9,7 @@ from tf2_ros import TransformListener, Buffer
 from transforms3d.euler import euler2quat
 import math
 import numpy as np
+import copy
 
 class PersonLocateNode(Node):
     def __init__(self):
