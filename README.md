@@ -1,6 +1,20 @@
 # Smart sensor processer nodes for the mecanumbot package
 
-In this folder, nodes are situated which extract information from the mecanumbot's on-board sensors
+This package provides ROS 2 nodes that extract information from mecanumbot's on-board sensors.
+
+## Available nodes
+
+| Node | Purpose | File |
+| --- | --- | --- |
+| `mecanumbot_lidar_detect_people` | Runs DR-SPAAM on LiDAR scans to detect and track people. | `mecanumbot_sensorprocess_smart/mecanumbot_lidar_detect_people.py` |
+| `mecanumbot_cam_detect_people` | Runs YOLO pose inference on the main camera or a compressed image topic to detect people. | `mecanumbot_sensorprocess_smart/mecanumbot_cam_detect_people.py` |
+| `mecanumbot_onboard_cam_detect_people` | Runs the DeepStream-based camera people detector on NVIDIA hardware. | `mecanumbot_sensorprocess_smart/mecanumbot_onboard_cam_detect_people.py` |
+| `mecanumbot_locate_detections` | Fuses camera and LiDAR detections and projects them into map space. | `mecanumbot_sensorprocess_smart/mecanumbot_locate_detections.py` |
+| `mecanumbot_detect_tennis` | Detects tennis balls from the camera stream and publishes their presence state. | `mecanumbot_sensorprocess_smart/mecanumbot_detect_tennis.py` |
+
+## Launch file
+
+`launch/mecanumbot_peopledetect.launch.py` starts the LiDAR people detector, the camera people detector, and the detection-localization node in the `mecanumbot` namespace.
 
 ## Node: mecanumbot_lidar_detect_people
 
@@ -36,7 +50,11 @@ In this folder, nodes are situated which extract information from the mecanumbot
 | File or folder                                                   | Function                                                      |
 | ---------------------------------------------------------------- | ------------------------------------------------------------- |
 | mecanumbot_sensorprocess_smart/mecanumbot_lidar_detect_people.py | Main detection node and tracking pipeline.                    |
-| launch/mecanumbot_peopledetect.launch.py                         | Launches the detection node with parameter file.              |
+| mecanumbot_sensorprocess_smart/mecanumbot_cam_detect_people.py   | Main camera people detection node.                            |
+| mecanumbot_sensorprocess_smart/mecanumbot_onboard_cam_detect_people.py | DeepStream-based camera people detection node.         |
+| mecanumbot_sensorprocess_smart/mecanumbot_locate_detections.py   | Detection fusion and localization node.                        |
+| mecanumbot_sensorprocess_smart/mecanumbot_detect_tennis.py       | Tennis ball detection node.                                    |
+| launch/mecanumbot_peopledetect.launch.py                         | Launches the people-detection pipeline with shared parameters. |
 | param/lidar_peopledetect_config.yaml                             | Runtime ROS parameters for node topics and thresholds.        |
 | models/dr_spaam_5_on_frog.pth                                    | DR-SPAAM pretrained weights file used for inference.          |
 | config/lidar_peopledetect_config.yaml                            | Additional packaged config copy for deployment compatibility. |
