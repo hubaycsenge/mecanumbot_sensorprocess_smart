@@ -54,6 +54,7 @@ class PersonLocateNode(Node):
         self.map_data = None
         self.map_array = None
         self.amcl_pose = None
+        self.last_published_time = None
 
         self.people_left_FOV = PoseArray()
         self.people_left_FOV.header.frame_id = 'map' if self.get_namespace().strip('/') else 'map'
@@ -335,37 +336,38 @@ class PersonLocateNode(Node):
         fused_poses = PoseArray()
         fused_poses.header.stamp = self.cam_stamp
         fused_poses.header.frame_id = 'mecanumbot/base_link'
-
-        for person in self.cam_detections:
-            # 1. Try to match with existing LiDAR detections
-            person_pose = self.arrange_with_scan_dets(person)    
-            
-            # 2. Fallback: Extrapolate from raw scan
-            if person_pose is None:
-                person_pose = self.extrap_from_raw_scan(person)
+        if self.cam_stamp != self.last_published_time:
+            for person in self.cam_detections:
+                # 1. Try to match with existing LiDAR detections
+                person_pose = self.arrange_with_scan_dets(person)    
                 
-                
-            # 3. Validation: Verify pose isn't on a mapped wall
-            if person_pose is not None:
-                person_pose = self.handle_map_occlusion(person_pose)
-                fused_poses.poses.append(person_pose)
+                # 2. Fallback: Extrapolate from raw scan
+                if person_pose is None:
+                    person_pose = self.extrap_from_raw_scan(person)
+                    
+                    
+                # 3. Validation: Verify pose isn't on a mapped wall
+                if person_pose is not None:
+                    person_pose = self.handle_map_occlusion(person_pose)
+                    fused_poses.poses.append(person_pose)
 
-            self.fill_bound_angle(person.bound_angle_min.data, person.bound_angle_max.data)   
-        # Publish combined array
-        if fused_poses.poses:
-            self.get_logger().info(f"Publishing {len(fused_poses.poses)} fused detections.")
-            self.people_pub.publish(fused_poses)
-        if self.people_left_FOV.poses:
-            self.get_logger().info(f"Publishing {len(self.people_left_FOV.poses)} left FOV detections.")
-            self.people_left_FOV.header.stamp = self.cam_stamp 
-            self.people_left_FOV_pub.publish(self.people_left_FOV)
-            self.people_left_FOV.poses.clear()
-        if self.people_right_FOV.poses:
-            self.get_logger().info(f"Publishing {len(self.people_right_FOV.poses)} right FOV detections.")
-            self.people_right_FOV.header.stamp = self.cam_stamp
-            self.people_right_FOV_pub.publish(self.people_right_FOV)
-            self.people_right_FOV.poses.clear()
-            
+                self.fill_bound_angle(person.bound_angle_min.data, person.bound_angle_max.data)   
+            # Publish combined array
+            if fused_poses.poses:
+                #self.get_logger().info(f"Publishing {len(fused_poses.poses)} fused detections.")
+                self.people_pub.publish(fused_poses)
+            if self.people_left_FOV.poses:
+                #self.get_logger().info(f"Publishing {len(self.people_left_FOV.poses)} left FOV detections.")
+                self.people_left_FOV.header.stamp = self.cam_stamp 
+                self.people_left_FOV_pub.publish(self.people_left_FOV)
+                self.people_left_FOV.poses.clear()
+            if self.people_right_FOV.poses:
+                #self.get_logger().info(f"Publishing {len(self.people_right_FOV.poses)} right FOV detections.")
+                self.people_right_FOV.header.stamp = self.cam_stamp
+                self.people_right_FOV_pub.publish(self.people_right_FOV)
+                self.people_right_FOV.poses.clear()
+            self.last_published_time = self.cam_stamp
+
 def main(args=None):
     rclpy.init(args=args)
     node = PersonLocateNode()
