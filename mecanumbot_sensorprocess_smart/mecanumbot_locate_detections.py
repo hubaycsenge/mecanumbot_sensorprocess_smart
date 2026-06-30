@@ -236,13 +236,13 @@ class PersonLocateNode(Node):
             ~np.isnan(slice_ranges)
         )
         valid_ranges = slice_ranges[valid_mask]
-        valid_ranges = np.round(valid_ranges, 1)  # Round to 3 decimal places for stability
+        #valid_ranges = np.round(valid_ranges, 1)  # Round to 3 decimal places for stability
 
         if len(valid_ranges) == 0:
             return None
 
         # Use median to ignore background laser hits
-        dist_median = float(np.median(valid_ranges))
+        dist_median = float(np.percentile(valid_ranges, 25))#float(np.median(valid_ranges))
         center_angle = p_min + (p_max - p_min) / 2.0
         
         x = dist_median * math.cos(center_angle)
