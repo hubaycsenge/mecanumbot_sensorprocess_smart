@@ -9,6 +9,7 @@ from tf2_geometry_msgs import do_transform_pose
 from nav_msgs.msg import OccupancyGrid
 from tf2_ros import TransformListener, Buffer
 from transforms3d.euler import euler2quat,quat2euler
+from rclpy.duration import Duration
 import math
 import numpy as np
 import copy
@@ -360,6 +361,13 @@ class PersonLocateNode(Node):
                     pose_stamped.header.frame_id = "mecanumbot/base_link"
                     pose_stamped.header.stamp = self.cam_stamp   # or self.get_clock().now().to_msg()
                     pose_stamped.pose = person_pose
+                    if not self.tf_buffer.can_transform(
+                                                        'map',
+                                                        'mecanumbot/base_link',
+                                                        self.cam_stamp,
+                                                        timeout=Duration(seconds=0.2)):
+                        self.get_logger().warn("Transform unavailable")
+                        return
                     trans = self.tf_buffer.lookup_transform(
                                                             'map',
                                                             'mecanumbot/base_link',
