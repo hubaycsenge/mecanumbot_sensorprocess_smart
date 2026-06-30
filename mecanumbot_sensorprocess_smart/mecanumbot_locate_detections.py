@@ -242,7 +242,7 @@ class PersonLocateNode(Node):
             return None
 
         # Use median to ignore background laser hits
-        dist_median = float(np.percentile(valid_ranges, 25))#float(np.median(valid_ranges))
+        dist_median = float(np.percentile(valid_ranges, 20))#float(np.median(valid_ranges))
         center_angle = p_min + (p_max - p_min) / 2.0
         
         x = dist_median * math.cos(center_angle)
