@@ -356,7 +356,10 @@ class PersonLocateNode(Node):
                 # 3. Validation: Verify pose isn't on a mapped wall
                 if person_pose is not None:
                     person_pose = self.handle_map_occlusion(person_pose)
-                    pose_stamped = PoseStamped(header='mecanumbot/base_link', pose=person_pose)
+                    pose_stamped = PoseStamped()
+                    pose_stamped.header.frame_id = "mecanumbot/base_link"
+                    pose_stamped.header.stamp = self.cam_stamp   # or self.get_clock().now().to_msg()
+                    pose_stamped.pose = person_pose
                     trans = self.tf_buffer.lookup_transform(
                                                             'map',
                                                             'mecanumbot/base_link',
