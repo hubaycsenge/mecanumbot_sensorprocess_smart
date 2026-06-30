@@ -4,7 +4,8 @@ from scipy.spatial.transform import Rotation as R
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, ReliabilityPolicy
 from mecanumbot_msgs.msg import CamPersonDetectionArray
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PoseArray, Pose, Point, PoseWithCovarianceStamped, Quaternion
+from geometry_msgs.msg import PoseArray, Pose, PoseStamped, Point, PoseWithCovarianceStamped, Quaternion
+from tf2_geometry_msgs import do_transform_pose
 from nav_msgs.msg import OccupancyGrid
 from tf2_ros import TransformListener, Buffer
 from transforms3d.euler import euler2quat,quat2euler
@@ -27,9 +28,11 @@ class PersonLocateNode(Node):
         
         # Declare parameter for the "X" meter offset behind the obstacle
         self.declare_parameter('obstacle_buffer_x', 0.5)
+        self.declare_parameter('debug_mode', False)
         
         # Publishers
         self.people_pub = self.create_publisher(PoseArray, 'people_fusion', 10)
+        self.debug_mode = self.get_parameter('debug_mode').value
         
         # Subscribers
         self.cam_people_sub = self.create_subscription(
@@ -56,15 +59,17 @@ class PersonLocateNode(Node):
         self.amcl_pose = None
         self.last_published_time = None
 
-        self.people_left_FOV = PoseArray()
-        self.people_left_FOV.header.frame_id = 'map' if self.get_namespace().strip('/') else 'map'
-        self.people_right_FOV = PoseArray()
-        self.people_right_FOV.header.frame_id = 'map' if self.get_namespace().strip('/') else 'map'
-        self.people_left_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/left_FOV', 10)
-        self.people_right_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/right_FOV', 10)
+        if self.debug_mode:
+            self.people_left_FOV = PoseArray()
+            self.people_left_FOV.header.frame_id = 'map' if self.get_namespace().strip('/') else 'map'
+            self.people_right_FOV = PoseArray()
+            self.people_right_FOV.header.frame_id = 'map' if self.get_namespace().strip('/') else 'map'
+            self.people_left_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/left_FOV', 10)
+            self.people_right_FOV_pub = self.create_publisher(PoseArray, 'cam_people_detections/right_FOV', 10)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+
         
         self.get_logger().info("Person Locate Node has started.")
 
@@ -153,6 +158,7 @@ class PersonLocateNode(Node):
         # 7. Append to your PoseArrays
         self.people_left_FOV.poses.append(min_pose)
         self.people_right_FOV.poses.append(max_pose)
+
     def lidar_people_callback(self, msg):
         try:
             # Safely fetch transform, defaulting to base_scan if header is missing
@@ -336,7 +342,7 @@ class PersonLocateNode(Node):
         #self.get_logger().info(f"Fusing {len(self.cam_detections)} camera detections with {len(self.laser_detections)} LiDAR detections.")
         self.fused_poses = PoseArray()
         self.fused_poses.header.stamp = self.cam_stamp
-        self.fused_poses.header.frame_id = 'mecanumbot/base_link'
+        self.fused_poses.header.frame_id = 'map'
         if self.cam_stamp != self.last_published_time:
             for person in self.cam_detections:
                 # 1. Try to match with existing LiDAR detections
@@ -350,23 +356,30 @@ class PersonLocateNode(Node):
                 # 3. Validation: Verify pose isn't on a mapped wall
                 if person_pose is not None:
                     person_pose = self.handle_map_occlusion(person_pose)
-                    self.fused_poses.poses.append(person_pose)
-
-                self.fill_bound_angle(person.bound_angle_min.data, person.bound_angle_max.data)   
+                    pose_stamped = PoseStamped(header='mecanumbot/base_link', pose=person_pose)
+                    trans = self.tf_buffer.lookup_transform(
+                                                            'map',
+                                                            'mecanumbot/base_link',
+                                                            self.cam_stamp
+                                                        )
+                    self.fused_poses.poses.append(do_transform_pose(pose_stamped, trans).pose)
+                if self.debug_mode:
+                    self.fill_bound_angle(person.bound_angle_min.data, person.bound_angle_max.data)   
             # Publish combined array
             if self.fused_poses.poses:
                 #self.get_logger().info(f"Publishing {len(self.fused_poses.poses)} fused detections.")
                 self.people_pub.publish(self.fused_poses)
-            if self.people_left_FOV.poses:
-                #self.get_logger().info(f"Publishing {len(self.people_left_FOV.poses)} left FOV detections.")
-                self.people_left_FOV.header.stamp = self.cam_stamp 
-                self.people_left_FOV_pub.publish(self.people_left_FOV)
-                self.people_left_FOV.poses.clear()
-            if self.people_right_FOV.poses:
-                #self.get_logger().info(f"Publishing {len(self.people_right_FOV.poses)} right FOV detections.")
-                self.people_right_FOV.header.stamp = self.cam_stamp
-                self.people_right_FOV_pub.publish(self.people_right_FOV)
-                self.people_right_FOV.poses.clear()
+            if self.debug_mode:
+                if self.people_left_FOV.poses:
+                    #self.get_logger().info(f"Publishing {len(self.people_left_FOV.poses)} left FOV detections.")
+                    self.people_left_FOV.header.stamp = self.cam_stamp 
+                    self.people_left_FOV_pub.publish(self.people_left_FOV)
+                    self.people_left_FOV.poses.clear()
+                if self.people_right_FOV.poses:
+                    #self.get_logger().info(f"Publishing {len(self.people_right_FOV.poses)} right FOV detections.")
+                    self.people_right_FOV.header.stamp = self.cam_stamp
+                    self.people_right_FOV_pub.publish(self.people_right_FOV)
+                    self.people_right_FOV.poses.clear()
             self.last_published_time = self.cam_stamp
         else:
             if self.fused_poses.poses:
