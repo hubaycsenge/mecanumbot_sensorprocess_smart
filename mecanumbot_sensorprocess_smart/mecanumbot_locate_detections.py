@@ -371,7 +371,7 @@ class PersonLocateNode(Node):
                     trans = self.tf_buffer.lookup_transform(
                                                             'map',
                                                             'mecanumbot/base_link',
-                                                            self.cam_stamp
+                                                            rclpy.time.Time()
                                                         )
                     self.fused_poses.poses.append(do_transform_pose(pose_stamped.pose, trans))
                 if self.debug_mode:
