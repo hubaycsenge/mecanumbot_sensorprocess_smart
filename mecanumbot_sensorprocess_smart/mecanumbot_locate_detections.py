@@ -264,7 +264,7 @@ class PersonLocateNode(Node):
         
         x = dist_median * math.cos(center_angle)
         y = dist_median * math.sin(center_angle)
-        self.get_logger().info(f"Extrapolated detection at local coordinates: ({x:.2f}, {y:.2f})")
+        #self.get_logger().info(f"Extrapolated detection at local coordinates: ({x:.2f}, {y:.2f})")
         return Pose(position=Point(x=x, y=y, z=0.0))
 
     def handle_map_occlusion(self, local_pose):
@@ -299,9 +299,8 @@ class PersonLocateNode(Node):
             self.get_logger().warn("Detection is out of map bounds, skipping occlusion check.")
             return local_pose # Out of map bounds
             
-        # 4. Check if the cell is an obstacle (> 50 confidence)
         if self.map_array[gy, gx] > 50:
-            self.get_logger().info("Wall occlusion detected! Tracing back of wall...")
+            #self.get_logger().info("Wall occlusion detected! Tracing back of wall...")
             
             # Global ray angle from robot
             ray_yaw = ryaw + math.atan2(local_y, local_x)
@@ -344,7 +343,7 @@ class PersonLocateNode(Node):
                 f"({corrected_pose.position.x:.2f}, {corrected_pose.position.y:.2f})"
             )
             return corrected_pose
-        self.get_logger().info("No wall occlusion detected, keeping original pose.")
+        #self.get_logger().info("No wall occlusion detected, keeping original pose.")
         return local_pose
         
     def merge_detections(self):
