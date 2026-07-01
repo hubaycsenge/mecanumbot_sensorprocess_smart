@@ -5,6 +5,8 @@ from rclpy.qos import QoSProfile, QoSDurabilityPolicy, ReliabilityPolicy
 from mecanumbot_msgs.msg import CamPersonDetectionArray
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseArray, Pose, PoseStamped, Point, PoseWithCovarianceStamped, Quaternion
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from tf2_geometry_msgs import do_transform_pose
 from nav_msgs.msg import OccupancyGrid
 from tf2_ros import TransformListener, Buffer
@@ -27,6 +29,8 @@ class PersonLocateNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
+
+        self.camera_cb_group = MutuallyExclusiveCallbackGroup()
         # Declare parameter for the "X" meter offset behind the obstacle
         self.declare_parameter('obstacle_buffer_x', 0.5)
         self.declare_parameter('debug_mode', False)
@@ -37,7 +41,12 @@ class PersonLocateNode(Node):
         
         # Subscribers
         self.cam_people_sub = self.create_subscription(
-            CamPersonDetectionArray, 'cam_people_detections', self.cam_people_callback, 10)
+            CamPersonDetectionArray, 
+            'cam_people_detections', 
+            self.cam_people_callback, 
+            10,
+            callback_group=self.camera_cb_group
+        )
         self.laser_people_sub = self.create_subscription(
             PoseArray, 'dets', self.lidar_people_callback, 10)
         self.scan_sub = self.create_subscription(
@@ -70,6 +79,7 @@ class PersonLocateNode(Node):
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.trans = None
 
         
         self.get_logger().info("Person Locate Node has started.")
@@ -367,13 +377,14 @@ class PersonLocateNode(Node):
                                                         self.cam_stamp,
                                                         timeout=Duration(seconds=0.2)):
                         self.get_logger().warn("Transform unavailable")
-                        return
-                    trans = self.tf_buffer.lookup_transform(
+                    else:
+                        self.trans = self.tf_buffer.lookup_transform(
                                                             'map',
                                                             'mecanumbot/base_link',
                                                             rclpy.time.Time()
                                                         )
-                    self.fused_poses.poses.append(do_transform_pose(pose_stamped.pose, trans))
+                    if self.trans is not None:
+                        self.fused_poses.poses.append(do_transform_pose(pose_stamped.pose, self.trans))
                 if self.debug_mode:
                     self.fill_bound_angle(person.bound_angle_min.data, person.bound_angle_max.data)   
             # Publish combined array
@@ -400,8 +411,12 @@ class PersonLocateNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = PersonLocateNode()
+    
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+    
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
