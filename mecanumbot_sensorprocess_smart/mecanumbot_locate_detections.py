@@ -373,7 +373,7 @@ class PersonLocateNode(Node):
                                                             'mecanumbot/base_link',
                                                             self.cam_stamp
                                                         )
-                    self.fused_poses.poses.append(do_transform_pose(pose_stamped, trans).pose)
+                    self.fused_poses.poses.append(do_transform_pose(pose_stamped.pose, trans).pose)
                 if self.debug_mode:
                     self.fill_bound_angle(person.bound_angle_min.data, person.bound_angle_max.data)   
             # Publish combined array
