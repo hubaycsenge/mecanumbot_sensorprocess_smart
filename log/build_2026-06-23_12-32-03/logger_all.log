@@ -1,0 +1,91 @@
+[0.289s] DEBUG:colcon:Command line arguments: ['/usr/bin/colcon', 'build', '--symlink-install', '--packages-select', 'mecanumbot_sensorprocess_smart']
+[0.289s] DEBUG:colcon:Parsed command line arguments: Namespace(log_base=None, log_level=None, verb_name='build', build_base='build', install_base='install', merge_install=False, symlink_install=True, test_result_base=None, continue_on_error=False, executor='parallel', parallel_workers=6, event_handlers=None, ignore_user_meta=False, metas=['./colcon.meta'], base_paths=['.'], packages_ignore=None, packages_ignore_regex=None, paths=None, packages_up_to=None, packages_up_to_regex=None, packages_above=None, packages_above_and_dependencies=None, packages_above_depth=None, packages_select_by_dep=None, packages_skip_by_dep=None, packages_skip_up_to=None, packages_select_build_failed=False, packages_skip_build_finished=False, packages_select_test_failures=False, packages_skip_test_passed=False, packages_select=['mecanumbot_sensorprocess_smart'], packages_skip=None, packages_select_regex=None, packages_skip_regex=None, packages_start=None, packages_end=None, allow_overriding=[], cmake_args=None, cmake_target=None, cmake_target_skip_unavailable=False, cmake_clean_cache=False, cmake_clean_first=False, cmake_force_configure=False, ament_cmake_args=None, catkin_cmake_args=None, catkin_skip_building_tests=False, mixin_files=None, mixin=None, verb_parser=<colcon_mixin.mixin.mixin_argument.MixinArgumentDecorator object at 0xffffac3d6740>, verb_extension=<colcon_core.verb.build.BuildVerb object at 0xffffac3d6230>, main=<bound method BuildVerb.main of <colcon_core.verb.build.BuildVerb object at 0xffffac3d6230>>, mixin_verb=('build',))
+[0.717s] Level 1:colcon.colcon_core.package_discovery:discover_packages(colcon_meta) check parameters
+[0.718s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) check parameters
+[0.718s] Level 1:colcon.colcon_core.package_discovery:discover_packages(ignore) check parameters
+[0.718s] Level 1:colcon.colcon_core.package_discovery:discover_packages(path) check parameters
+[0.718s] Level 1:colcon.colcon_core.package_discovery:discover_packages(colcon_meta) discover
+[0.718s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) discover
+[0.718s] INFO:colcon.colcon_core.package_discovery:Crawling recursively for packages in '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart'
+[0.718s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extensions ['ignore', 'ignore_ament_install']
+[0.719s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extension 'ignore'
+[0.719s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extension 'ignore_ament_install'
+[0.719s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extensions ['colcon_pkg']
+[0.719s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extension 'colcon_pkg'
+[0.719s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extensions ['colcon_meta']
+[0.719s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extension 'colcon_meta'
+[0.719s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extensions ['ros']
+[0.719s] Level 1:colcon.colcon_core.package_identification:_identify(.) by extension 'ros'
+[0.786s] DEBUG:colcon.colcon_core.package_identification:Package '.' with type 'ros.ament_python' and name 'mecanumbot_sensorprocess_smart'
+[0.787s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) using defaults
+[0.787s] Level 1:colcon.colcon_core.package_discovery:discover_packages(ignore) discover
+[0.787s] Level 1:colcon.colcon_core.package_discovery:discover_packages(ignore) using defaults
+[0.787s] Level 1:colcon.colcon_core.package_discovery:discover_packages(path) discover
+[0.787s] Level 1:colcon.colcon_core.package_discovery:discover_packages(path) using defaults
+[0.836s] Level 1:colcon.colcon_core.package_discovery:discover_packages(prefix_path) check parameters
+[0.836s] Level 1:colcon.colcon_core.package_discovery:discover_packages(prefix_path) discover
+[0.843s] DEBUG:colcon.colcon_installed_package_information.package_discovery:Found 16 installed packages in /home/ubuntu/mecanumbot_ws/install
+[0.846s] DEBUG:colcon.colcon_installed_package_information.package_discovery:Found 324 installed packages in /opt/ros/humble
+[0.849s] Level 1:colcon.colcon_core.package_discovery:discover_packages(prefix_path) using defaults
+[0.945s] Level 5:colcon.colcon_core.verb:set package 'mecanumbot_sensorprocess_smart' build argument 'cmake_args' from command line to 'None'
+[0.945s] Level 5:colcon.colcon_core.verb:set package 'mecanumbot_sensorprocess_smart' build argument 'cmake_target' from command line to 'None'
+[0.945s] Level 5:colcon.colcon_core.verb:set package 'mecanumbot_sensorprocess_smart' build argument 'cmake_target_skip_unavailable' from command line to 'False'
+[0.945s] Level 5:colcon.colcon_core.verb:set package 'mecanumbot_sensorprocess_smart' build argument 'cmake_clean_cache' from command line to 'False'
+[0.945s] Level 5:colcon.colcon_core.verb:set package 'mecanumbot_sensorprocess_smart' build argument 'cmake_clean_first' from command line to 'False'
+[0.945s] Level 5:colcon.colcon_core.verb:set package 'mecanumbot_sensorprocess_smart' build argument 'cmake_force_configure' from command line to 'False'
+[0.946s] Level 5:colcon.colcon_core.verb:set package 'mecanumbot_sensorprocess_smart' build argument 'ament_cmake_args' from command line to 'None'
+[0.946s] Level 5:colcon.colcon_core.verb:set package 'mecanumbot_sensorprocess_smart' build argument 'catkin_cmake_args' from command line to 'None'
+[0.946s] Level 5:colcon.colcon_core.verb:set package 'mecanumbot_sensorprocess_smart' build argument 'catkin_skip_building_tests' from command line to 'False'
+[0.946s] DEBUG:colcon.colcon_core.verb:Building package 'mecanumbot_sensorprocess_smart' with the following arguments: {'ament_cmake_args': None, 'build_base': '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart', 'catkin_cmake_args': None, 'catkin_skip_building_tests': False, 'cmake_args': None, 'cmake_clean_cache': False, 'cmake_clean_first': False, 'cmake_force_configure': False, 'cmake_target': None, 'cmake_target_skip_unavailable': False, 'install_base': '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart', 'merge_install': False, 'path': '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart', 'symlink_install': True, 'test_result_base': None}
+[0.946s] INFO:colcon.colcon_core.executor:Executing jobs using 'parallel' executor
+[0.949s] DEBUG:colcon.colcon_parallel_executor.executor.parallel:run_until_complete
+[0.949s] INFO:colcon.colcon_ros.task.ament_python.build:Building ROS package in '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart' with build type 'ament_python'
+[0.950s] Level 1:colcon.colcon_core.shell:create_environment_hook('mecanumbot_sensorprocess_smart', 'ament_prefix_path')
+[0.955s] INFO:colcon.colcon_core.plugin_system:Skipping extension 'colcon_core.shell.bat': Not used on non-Windows systems
+[0.955s] INFO:colcon.colcon_core.shell:Creating environment hook '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/ament_prefix_path.ps1'
+[0.957s] INFO:colcon.colcon_core.shell:Creating environment descriptor '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/ament_prefix_path.dsv'
+[0.958s] INFO:colcon.colcon_core.shell:Creating environment hook '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/ament_prefix_path.sh'
+[0.959s] INFO:colcon.colcon_core.shell:Skip shell extension 'powershell' for command environment: Not usable outside of PowerShell
+[0.959s] DEBUG:colcon.colcon_core.shell:Skip shell extension 'dsv' for command environment
+[1.650s] INFO:colcon.colcon_core.task.python.build:Building Python package in '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart'
+[1.651s] INFO:colcon.colcon_core.shell:Skip shell extension 'powershell' for command environment: Not usable outside of PowerShell
+[1.651s] DEBUG:colcon.colcon_core.shell:Skip shell extension 'dsv' for command environment
+[2.538s] DEBUG:colcon.colcon_core.event_handler.log_command:Invoking command in '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart': PYTHONPATH=/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart/build --no-deps symlink_data
+[3.795s] Level 1:colcon.colcon_core.shell:create_environment_hook('mecanumbot_sensorprocess_smart', 'pythonpath_develop')
+[3.796s] INFO:colcon.colcon_core.shell:Creating environment hook '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/pythonpath_develop.ps1'
+[3.798s] DEBUG:colcon.colcon_core.event_handler.log_command:Invoked command in '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart' returned '0': PYTHONPATH=/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart/build --no-deps symlink_data
+[3.799s] INFO:colcon.colcon_core.shell:Creating environment descriptor '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/pythonpath_develop.dsv'
+[3.800s] INFO:colcon.colcon_core.shell:Creating environment hook '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/pythonpath_develop.sh'
+[3.808s] Level 1:colcon.colcon_core.environment:checking '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart' for CMake module files
+[3.810s] Level 1:colcon.colcon_core.environment:checking '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart' for CMake config files
+[3.812s] Level 1:colcon.colcon_core.environment:checking '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/lib'
+[3.812s] Level 1:colcon.colcon_core.environment:checking '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/bin'
+[3.812s] Level 1:colcon.colcon_core.environment:checking '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/lib/pkgconfig/mecanumbot_sensorprocess_smart.pc'
+[3.813s] Level 1:colcon.colcon_core.environment:checking '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/lib/python3.10/site-packages'
+[3.813s] Level 1:colcon.colcon_core.shell:create_environment_hook('mecanumbot_sensorprocess_smart', 'pythonpath')
+[3.813s] INFO:colcon.colcon_core.shell:Creating environment hook '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/pythonpath.ps1'
+[3.814s] INFO:colcon.colcon_core.shell:Creating environment descriptor '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/pythonpath.dsv'
+[3.815s] INFO:colcon.colcon_core.shell:Creating environment hook '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/pythonpath.sh'
+[3.817s] Level 1:colcon.colcon_core.environment:checking '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/bin'
+[3.817s] Level 1:colcon.colcon_core.environment:create_environment_scripts_only(mecanumbot_sensorprocess_smart)
+[3.818s] INFO:colcon.colcon_core.shell:Creating package script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/package.ps1'
+[3.821s] INFO:colcon.colcon_core.shell:Creating package descriptor '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/package.dsv'
+[3.822s] INFO:colcon.colcon_core.shell:Creating package script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/package.sh'
+[3.825s] INFO:colcon.colcon_core.shell:Creating package script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/package.bash'
+[3.827s] INFO:colcon.colcon_core.shell:Creating package script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/package.zsh'
+[3.828s] Level 1:colcon.colcon_core.environment:create_file_with_runtime_dependencies(/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/mecanumbot_sensorprocess_smart/share/colcon-core/packages/mecanumbot_sensorprocess_smart)
+[3.829s] DEBUG:colcon.colcon_parallel_executor.executor.parallel:closing loop
+[3.831s] DEBUG:colcon.colcon_parallel_executor.executor.parallel:loop closed
+[3.831s] DEBUG:colcon.colcon_parallel_executor.executor.parallel:run_until_complete finished with '0'
+[3.831s] DEBUG:colcon.colcon_core.event_reactor:joining thread
+[3.831s] DEBUG:colcon.colcon_core.event_reactor:joined thread
+[3.832s] INFO:colcon.colcon_core.shell:Creating prefix script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/local_setup.ps1'
+[3.834s] INFO:colcon.colcon_core.shell:Creating prefix util module '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/_local_setup_util_ps1.py'
+[3.838s] INFO:colcon.colcon_core.shell:Creating prefix chain script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/setup.ps1'
+[3.844s] INFO:colcon.colcon_core.shell:Creating prefix script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/local_setup.sh'
+[3.845s] INFO:colcon.colcon_core.shell:Creating prefix util module '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/_local_setup_util_sh.py'
+[3.847s] INFO:colcon.colcon_core.shell:Creating prefix chain script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/setup.sh'
+[3.851s] INFO:colcon.colcon_core.shell:Creating prefix script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/local_setup.bash'
+[3.852s] INFO:colcon.colcon_core.shell:Creating prefix chain script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/setup.bash'
+[3.856s] INFO:colcon.colcon_core.shell:Creating prefix script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/local_setup.zsh'
+[3.858s] INFO:colcon.colcon_core.shell:Creating prefix chain script '/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/install/setup.zsh'

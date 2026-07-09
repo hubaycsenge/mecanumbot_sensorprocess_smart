@@ -1,0 +1,9 @@
+source;share/mecanumbot_sensorprocess_smart/hook/pythonpath.ps1
+source;share/mecanumbot_sensorprocess_smart/hook/pythonpath.dsv
+source;share/mecanumbot_sensorprocess_smart/hook/pythonpath.sh
+source;share/mecanumbot_sensorprocess_smart/hook/ament_prefix_path.ps1
+source;share/mecanumbot_sensorprocess_smart/hook/ament_prefix_path.dsv
+source;share/mecanumbot_sensorprocess_smart/hook/ament_prefix_path.sh
+source;../../build/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/pythonpath_develop.ps1
+source;../../build/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/pythonpath_develop.dsv
+source;../../build/mecanumbot_sensorprocess_smart/share/mecanumbot_sensorprocess_smart/hook/pythonpath_develop.sh
