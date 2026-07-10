@@ -50,7 +50,7 @@ class DeepStreamPersonDetectNode(Node):
         self.webcam_device = self.get_parameter('webcam_device').value
         self.Y_padding = (self.camera_width - self.camera_height)/2
         self.debug_mode = self.get_parameter('debug_mode').value
-        self.min_conf_threshold = 0.5
+        self.min_conf_threshold = 0.35
         self.max_conf_min_threshold = 0.85
         self.max_wrong_keypoints = 15
         # Initialize GStreamer
@@ -240,13 +240,13 @@ class DeepStreamPersonDetectNode(Node):
                                 conf_p2, x_p2, y_p2 = keypoints[p2]
                                 #self.get_logger().info(f"Drawing line between keypoints {x_p1};{y_p1} and {x_p2};{y_p2} with confidences {conf_p1:.2f}, {conf_p2:.2f}")
                                 # Only draw the line if both keypoints are fairly confident
-                                if conf_p1 > 0.2 and conf_p2 > 0.2:
+                                if conf_p1 > self.min_conf_threshold and conf_p2 > self.min_conf_threshold:
                                     cv2.line(debug_img, (int(x_p1), int(y_p1- self.Y_padding)), (int(x_p2), int(y_p2- self.Y_padding)), (0, 255, 255), 2)
 
                             # 3. Draw Keypoint Dots
                             for i in range(17):
                                 kconf, kx, ky = keypoints[i]
-                                if kconf > 0.2:
+                                if kconf > self.min_conf_threshold:
                                     cv2.circle(debug_img, (int(kx), int(ky- self.Y_padding)), 4, (0, 255, 0), -1)
 
                 l_obj = l_obj.next
