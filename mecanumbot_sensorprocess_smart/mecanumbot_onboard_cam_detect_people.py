@@ -50,7 +50,7 @@ class DeepStreamPersonDetectNode(Node):
         self.webcam_device = self.get_parameter('webcam_device').value
         self.Y_padding = (self.camera_width - self.camera_height)/2
         self.debug_mode = self.get_parameter('debug_mode').value
-        self.min_conf_threshold = 0.5
+        self.min_conf_threshold = 0.35
         self.max_conf_min_threshold = 0.85
         self.max_wrong_keypoints = 15
         # Initialize GStreamer
