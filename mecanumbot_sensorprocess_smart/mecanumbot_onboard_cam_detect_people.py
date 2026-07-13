@@ -33,8 +33,8 @@ class DeepStreamPersonDetectNode(Node):
         self.declare_parameters(
             namespace=namespace,
             parameters=[
-                ('camera_params.camera_width', 1280),
-                ('camera_params.camera_height', 960),
+                ('camera_params.camera_width', 640),
+                ('camera_params.camera_height', 480),
                 ('camera_params.camera_fov', math.radians(60.0)),
                 ('from_topic', False),
                 ('camera_topic', 'camera/image_raw/compressed'),
