@@ -1,1 +1,0 @@
-/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/deepstream_config/config_infer_yolo26_pose.txt

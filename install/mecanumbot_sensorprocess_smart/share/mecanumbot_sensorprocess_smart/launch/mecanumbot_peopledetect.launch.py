@@ -1,1 +1,0 @@
-/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/build/mecanumbot_sensorprocess_smart/launch/mecanumbot_peopledetect.launch.py
