@@ -97,11 +97,21 @@ class DeepStreamPersonDetectNode(Node):
         self.sink = Gst.ElementFactory.make("fakesink", "fakesink")
 
         # Add all elements to pipeline
-        for elem in [self.source, self.vidconv_src, self.mux, self.nvinfer, self.vidconv_out, self.capsfilter_out, self.sink]:
+        # Add all elements to pipeline
+        elements_to_add = [self.source, self.vidconv_src, self.mux, self.nvinfer, self.vidconv_out, self.capsfilter_out, self.sink]
+        if not self.from_topic:
+            elements_to_add.insert(1, self.webcam_caps)
+            
+        for elem in elements_to_add:
             self.pipeline.add(elem)
 
-        # Link elements: source -> vidconv_src -> mux -> nvinfer -> vidconv_out -> capsfilter -> sink
-        self.source.link(self.vidconv_src)
+        # Link elements appropriately based on source type
+        if self.from_topic:
+            self.source.link(self.vidconv_src)
+        else:
+            self.source.link(self.webcam_caps)
+            self.webcam_caps.link(self.vidconv_src)
+
         vidconv_src_pad = self.vidconv_src.get_static_pad("src")
         mux_sink_pad = self.mux.get_request_pad("sink_0")
         vidconv_src_pad.link(mux_sink_pad)
