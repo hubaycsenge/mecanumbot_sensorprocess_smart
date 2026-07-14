@@ -34,7 +34,7 @@ class DeepStreamPersonDetectNode(Node):
             namespace=namespace,
             parameters=[
                 ('camera_params.camera_width', 1280),
-                ('camera_params.camera_height', 1080),
+                ('camera_params.camera_height', 720),
                 ('camera_params.camera_fov', math.radians(60.0)),
                 ('from_topic', False),
                 ('camera_topic', 'camera/image_raw/compressed'),
@@ -70,6 +70,11 @@ class DeepStreamPersonDetectNode(Node):
         else:
             self.source = Gst.ElementFactory.make("v4l2src", "webcam-source")
             self.source.set_property("device", self.webcam_device)
+            
+            # Force hardware webcam to physically capture at 1280x720 (16:9)
+            self.webcam_caps = Gst.ElementFactory.make("capsfilter", "webcam_caps")
+            caps = Gst.Caps.from_string(f"video/x-raw, width={self.camera_width}, height={self.camera_height}")
+            self.webcam_caps.set_property("caps", caps)
             
         self.vidconv_src = Gst.ElementFactory.make("nvvideoconvert", "convertor_src")
         self.mux = Gst.ElementFactory.make("nvstreammux", "muxer")
