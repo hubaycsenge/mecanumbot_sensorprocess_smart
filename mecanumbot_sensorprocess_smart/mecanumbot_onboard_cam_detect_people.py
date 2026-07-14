@@ -199,15 +199,17 @@ class DeepStreamPersonDetectNode(Node):
                     if max_confidence > self.max_conf_min_threshold and num_wrong_keypoints <= self.max_wrong_keypoints:
                         person_msg = CamPersonDetection()
                         
-                        # DeepStream already scales mask/keypoint arrays to the stream resolution.
-                        # Do not apply conditional multiplication here.
+                        gain = min(obj_meta.mask_params.width / self.camera_width, obj_meta.mask_params.height / self.camera_height)
+                        pad_x = (obj_meta.mask_params.width - self.camera_width * gain) / 2.0
+                        pad_y = (obj_meta.mask_params.height - self.camera_height * gain) / 2.0
+
+                        # 2. Extract keypoints, remove letterbox padding, and divide by gain to map to 1280x960 image space
                         pixel_kpts = []
                         for i in range(17):
                             conf = keypoints[i][0]
-                            px = keypoints[i][1]  # Raw pixel X
-                            py = keypoints[i][2]  # Raw pixel Y
+                            px = (keypoints[i][1] - pad_x) / gain
+                            py = (keypoints[i][2] - pad_y) / gain
                             pixel_kpts.append((conf, px, py))
-                            
                         # 3. Store normalized [0, 1] data into ROS message (No negative values!)
                         self.get_logger().info(f"Person keypoints (pixel): {pixel_kpts}")
                         person_msg.keypoints.nose = self.XYN_to_Pose(pixel_kpts[0][1] / self.camera_width, pixel_kpts[0][2] / self.camera_height, pixel_kpts[0][0])
