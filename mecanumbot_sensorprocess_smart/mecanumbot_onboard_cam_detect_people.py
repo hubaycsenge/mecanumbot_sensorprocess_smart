@@ -263,7 +263,7 @@ class DeepStreamPersonDetectNode(Node):
                                 kconf, kx, ky = pixel_kpts[i]
                                 if kconf > self.min_conf_threshold:
                                     cv2.circle(debug_img, (int(kx), int(ky)), 4, (0, 255, 0), -1)
-                l_obj = l_obj.next
+                                l_obj = l_obj.next
             
             if self.debug_mode:
                 debug_msg = CompressedImage()
