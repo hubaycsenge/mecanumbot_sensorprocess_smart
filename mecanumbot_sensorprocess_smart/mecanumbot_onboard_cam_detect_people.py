@@ -199,22 +199,17 @@ class DeepStreamPersonDetectNode(Node):
                     if max_confidence > self.max_conf_min_threshold and num_wrong_keypoints <= self.max_wrong_keypoints:
                         person_msg = CamPersonDetection()
                         
-                        # 1. Detect if the parser outputs normalized floats [0, 1] or raw pixels
-                        # If the max X value is <= 1.0, it is normalized and MUST be multiplied by image dimensions.
-                        is_normalized = np.max(keypoints[:, 1]) <= 1.0
-                        
-                        scale_x = self.camera_width if is_normalized else 1.0
-                        scale_y = self.camera_height if is_normalized else 1.0
-                        
-                        # 2. Extract true pixel coordinates (Do NOT subtract Y_padding here if using standard scaling)
+                        # DeepStream already scales mask/keypoint arrays to the stream resolution.
+                        # Do not apply conditional multiplication here.
                         pixel_kpts = []
                         for i in range(17):
                             conf = keypoints[i][0]
-                            px = keypoints[i][1] * scale_x
-                            py = keypoints[i][2] * scale_y
+                            px = keypoints[i][1]  # Raw pixel X
+                            py = keypoints[i][2]  # Raw pixel Y
                             pixel_kpts.append((conf, px, py))
                             
                         # 3. Store normalized [0, 1] data into ROS message (No negative values!)
+                        self.get_logger().info(f"Person keypoints (pixel): {pixel_kpts}")
                         person_msg.keypoints.nose = self.XYN_to_Pose(pixel_kpts[0][1] / self.camera_width, pixel_kpts[0][2] / self.camera_height, pixel_kpts[0][0])
                         person_msg.keypoints.left_eye = self.XYN_to_Pose(pixel_kpts[1][1] / self.camera_width, pixel_kpts[1][2] / self.camera_height, pixel_kpts[1][0])
                         person_msg.keypoints.right_eye = self.XYN_to_Pose(pixel_kpts[2][1] / self.camera_width, pixel_kpts[2][2] / self.camera_height, pixel_kpts[2][0])
