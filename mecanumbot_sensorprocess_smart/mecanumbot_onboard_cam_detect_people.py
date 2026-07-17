@@ -274,7 +274,13 @@ class DeepStreamPersonDetectNode(Node):
                             for i in range(17):
                                 kconf, kx, ky = pixel_kpts[i]
                                 if kconf > self.min_conf_threshold:
-                                    cv2.circle(debug_img, (int(kx), int(ky)), 4, (0, 255, 0), -1)
+                                    px = int(kx)
+                                    py = int(ky)
+                                    cv2.circle(debug_img, (px, py), 4, (0, 255, 0), -1)
+                                    label = f"{kconf:.2f}"
+                                    text_pos = (px + 6, py - 6)
+                                    cv2.putText(debug_img, label, text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 3, cv2.LINE_AA)
+                                    cv2.putText(debug_img, label, text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
                 l_obj = l_obj.next
             
             if self.debug_mode:
