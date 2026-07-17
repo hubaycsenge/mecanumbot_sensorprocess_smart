@@ -209,6 +209,7 @@ class DeepStreamPersonDetectNode(Node):
                     keypoints = np.array(raw_data).flatten()[:51].reshape((17, 3))
                     confidences = keypoints[:, 0]
                     max_confidence = np.max(confidences)
+                    overall_confidence = float(np.mean(confidences))
                     num_wrong_keypoints = np.sum(keypoints[:, 0] < self.min_conf_threshold)
                     
                     if max_confidence > self.max_conf_min_threshold:
@@ -256,12 +257,20 @@ class DeepStreamPersonDetectNode(Node):
                         
                         if self.debug_mode:
                             # 1. Draw Bounding Box
+                        
                             x1 = int(obj_meta.rect_params.left)
                             y1 = int(obj_meta.rect_params.top)
                             w = int(obj_meta.rect_params.width)
                             h = int(obj_meta.rect_params.height)
                             cv2.rectangle(debug_img, (x1, y1), (x1 + w, y1 + h), (255, 0, 0), 2)
-
+                            box_label = f"{overall_confidence:.2f}"
+                            (text_w, text_h), baseline = cv2.getTextSize(box_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                            label_x = x1
+                            label_y = max(y1, text_h + baseline + 4)
+                            cv2.rectangle(debug_img, (label_x, label_y - text_h - baseline - 4), (label_x + text_w + 8, label_y + 2), (255, 0, 0), -1)
+                            cv2.putText(debug_img, box_label, (label_x + 4, label_y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+                            obj_meta_conf = f"Object conf:{obj_meta.confidence:.2f}"
+                            cv2.putText(debug_img, obj_meta_conf, (label_x + 6, label_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
                             # 2. Draw Skeleton Lines using TRUE integer pixel coordinates
                             for p1, p2 in SKELETON_CONNECTIONS:
                                 conf_p1, x_p1, y_p1 = pixel_kpts[p1]
