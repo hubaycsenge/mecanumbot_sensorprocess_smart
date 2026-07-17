@@ -211,7 +211,7 @@ class DeepStreamPersonDetectNode(Node):
                     max_confidence = np.max(confidences)
                     num_wrong_keypoints = np.sum(keypoints[:, 0] < self.min_conf_threshold)
                     
-                    if max_confidence > self.max_conf_min_threshold and num_wrong_keypoints <= self.max_wrong_keypoints:
+                    if max_confidence > self.max_conf_min_threshold:
                         person_msg = CamPersonDetection()
                         
                         gain = min(obj_meta.mask_params.width / self.camera_width, obj_meta.mask_params.height / self.camera_height)
