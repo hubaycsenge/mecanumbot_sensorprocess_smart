@@ -270,7 +270,7 @@ class DeepStreamPersonDetectNode(Node):
                             cv2.rectangle(debug_img, (label_x, label_y - text_h - baseline - 4), (label_x + text_w + 8, label_y + 2), (255, 0, 0), -1)
                             cv2.putText(debug_img, box_label, (label_x + 4, label_y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
                             obj_meta_conf = f"Object conf:{obj_meta.confidence:.2f}"
-                            cv2.putText(debug_img, obj_meta_conf, (label_x + 100, label_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 0, 0), 5, cv2.LINE_AA)
+                            cv2.putText(debug_img, obj_meta_conf, (label_x + 100, label_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 5, cv2.LINE_AA)
                             # 2. Draw Skeleton Lines using TRUE integer pixel coordinates
                             for p1, p2 in SKELETON_CONNECTIONS:
                                 conf_p1, x_p1, y_p1 = pixel_kpts[p1]
