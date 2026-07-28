@@ -50,7 +50,7 @@ class DeepStreamPersonDetectNode(Node):
         self.webcam_device = self.get_parameter('webcam_device').value
         self.Y_padding = 0#(self.camera_width - self.camera_height) / 2.0
         self.debug_mode = self.get_parameter('debug_mode').value
-        self.min_conf_threshold = 0.15
+        self.min_conf_threshold = 0.6
         self.max_conf_min_threshold = 0.85
         self.max_wrong_keypoints = 15
         # Initialize GStreamer
@@ -214,7 +214,7 @@ class DeepStreamPersonDetectNode(Node):
                     num_wrong_keypoints = np.sum(keypoints[:, 0] < self.min_conf_threshold)
 
                     
-                    if overall_confidence > 0.3:
+                    if overall_confidence > self.min_conf_threshold:
                         person_msg = CamPersonDetection()
                         
                         gain = min(obj_meta.mask_params.width / self.camera_width, obj_meta.mask_params.height / self.camera_height)
@@ -229,7 +229,7 @@ class DeepStreamPersonDetectNode(Node):
                             py = (keypoints[i][2] - pad_y) / gain
                             pixel_kpts.append((conf, px, py))
                         # 3. Store normalized [0, 1] data into ROS message (No negative values!)
-                        self.get_logger().info(f"Person keypoints (pixel): {pixel_kpts}")
+                        #self.get_logger().info(f"Person keypoints (pixel): {pixel_kpts}")
                         person_msg.keypoints.nose = self.XYN_to_Pose(pixel_kpts[0][1] / self.camera_width, pixel_kpts[0][2] / self.camera_height, pixel_kpts[0][0])
                         person_msg.keypoints.left_eye = self.XYN_to_Pose(pixel_kpts[1][1] / self.camera_width, pixel_kpts[1][2] / self.camera_height, pixel_kpts[1][0])
                         person_msg.keypoints.right_eye = self.XYN_to_Pose(pixel_kpts[2][1] / self.camera_width, pixel_kpts[2][2] / self.camera_height, pixel_kpts[2][0])
