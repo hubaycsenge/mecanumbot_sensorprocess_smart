@@ -73,6 +73,10 @@ SKELETON2D_FROM_COCO17 = {
 
 SKELETON2D_NUM_JOINTS = 18
 
+# A body ID becomes a topic name token in /humans/bodies/<id>/..., and a ROS
+# topic token must not start with a digit, so the first character is drawn from
+# letters only.
+_ID_FIRST_ALPHABET = string.ascii_lowercase
 _ID_ALPHABET = string.ascii_lowercase + string.digits
 
 
@@ -159,7 +163,8 @@ class BodyIdTracker:
     provide. Greedy IoU association is enough here: the detector runs at camera
     rate, so frame-to-frame overlap is large, and the number of simultaneous
     bodies is small. IDs are short random strings, as REP-155 asks for IDs that
-    carry no personal information.
+    carry no personal information, and always start with a letter so that they
+    are valid ROS topic name tokens.
     """
 
     def __init__(self, iou_threshold=0.3, max_missed_time=0.5, id_length=5):
@@ -173,8 +178,8 @@ class BodyIdTracker:
 
     def _new_id(self):
         while True:
-            body_id = "".join(
-                random.choice(_ID_ALPHABET) for _ in range(self._id_length)
+            body_id = random.choice(_ID_FIRST_ALPHABET) + "".join(
+                random.choice(_ID_ALPHABET) for _ in range(self._id_length - 1)
             )
             if body_id not in self._tracks:
                 return body_id
