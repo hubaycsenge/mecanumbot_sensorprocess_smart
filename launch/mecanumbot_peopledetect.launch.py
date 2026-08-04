@@ -6,35 +6,39 @@ from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
 
 yaml_file = os.path.join(
-        get_package_share_directory('mecanumbot_sensorprocess_smart'),
-    'param',
-        'lidar_peopledetect_config.yaml'
-    )
+    get_package_share_directory("mecanumbot_sensorprocess_smart"),
+    "param",
+    "lidar_peopledetect_config.yaml",
+)
 print(yaml_file)
+
+
 def generate_launch_description():
-    return LaunchDescription([
-        Node(
-            namespace="mecanumbot",
-            package="mecanumbot_sensorprocess_smart",
-            executable="mecanumbot_lidar_detect_people",
-            name="mecanumbot_lidar_detect_people",  # must match YAML top-level key
-            output="screen",
-            parameters=[yaml_file]
-),
-        Node(
-            namespace="mecanumbot",
-            package="mecanumbot_sensorprocess_smart",
-            executable="mecanumbot_cam_detect_people",
-            name="mecanumbot_cam_detect_people",  # must match YAML top-level key
-            output="screen",
-            parameters=[yaml_file, {"from_topic": True}]
-        ),
-        Node(
-            namespace="mecanumbot",
-            package="mecanumbot_sensorprocess_smart",
-            executable="mecanumbot_locate_detections",
-            name="mecanumbot_locate_detections",  # must match YAML top-level key
-            output="screen",
-            parameters=[yaml_file]
-        )   
-    ])
+    return LaunchDescription(
+        [
+            Node(
+                namespace="mecanumbot",
+                package="mecanumbot_sensorprocess_smart",
+                executable="mecanumbot_lidar_detect_people",
+                name="mecanumbot_lidar_detect_people",  # must match YAML top-level key
+                output="screen",
+                parameters=[yaml_file],
+            ),
+            Node(
+                namespace="mecanumbot",
+                package="mecanumbot_sensorprocess_smart",
+                executable="mecanumbot_cam_detect_people",
+                name="mecanumbot_cam_detect_people",  # must match YAML top-level key
+                output="screen",
+                parameters=[yaml_file, {"from_topic": True}],
+            ),
+            Node(
+                namespace="mecanumbot",
+                package="mecanumbot_sensorprocess_smart",
+                executable="mecanumbot_locate_detections",
+                name="mecanumbot_locate_detections",  # must match YAML top-level key
+                output="screen",
+                parameters=[yaml_file],
+            ),
+        ]
+    )
