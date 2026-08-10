@@ -13,7 +13,10 @@ onnx-file=/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/models/y
 model-engine-file=/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/models/yolo26m-pose.onnx_b1_gpu0_fp16.engine
 labelfile-path=labels.txt
 batch-size=1
-network-mode=0
+# 0=FP32, 1=INT8, 2=FP16. Must match the precision in model-engine-file's name,
+# otherwise nvinfer saves the engine it builds under a different name than the one
+# it looks for and rebuilds from scratch on every launch.
+network-mode=2
 num-detected-classes=1
 interval=0
 gie-unique-id=1
