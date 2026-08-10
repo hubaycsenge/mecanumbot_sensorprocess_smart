@@ -8,9 +8,9 @@ cluster-mode=4
 network-type=3
 net-scale-factor=0.0039215697906911373
 # Point this to your exported YOLO26-pose ONNX model
-onnx-file=/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/models/yolo26s-pose.onnx
+onnx-file=/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/models/yolo26m-pose.onnx
 # DeepStream will automatically build and save the TensorRT engine here
-model-engine-file=/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/models/yolo26s-pose.onnx_b1_gpu0_fp16.engine
+model-engine-file=/home/ubuntu/mecanumbot_ws/src/mecanumbot_sensorprocess_smart/models/yolo26m-pose.onnx_b1_gpu0_fp16.engine
 labelfile-path=labels.txt
 batch-size=1
 network-mode=0
