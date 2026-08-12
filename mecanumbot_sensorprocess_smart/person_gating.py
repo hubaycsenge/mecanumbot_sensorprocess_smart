@@ -81,8 +81,8 @@ class GateConfig:
     keypoint_conf: float = 0.3
     best_keypoint_conf_acquire: float = 0.7
     best_keypoint_conf_retain: float = 0.5
-    min_valid_keypoints_acquire: int = 6
-    min_valid_keypoints_retain: int = 3
+    min_valid_keypoints_acquire: int = 4
+    min_valid_keypoints_retain: int = 2
     min_torso_keypoints_acquire: int = 2
     min_torso_keypoints_retain: int = 1
 
