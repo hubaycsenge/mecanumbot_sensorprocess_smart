@@ -84,6 +84,28 @@ mecanumbot_cam_detect_people_ds:
       # expected seated or very close to the camera.
       min_box_height: 40.0
       max_box_aspect_ratio: 1.6
+      # ---- close range ----
+      # The camera sits on the head at about 0.22 m with a ~36 deg vertical
+      # FOV, so from roughly 3 m in a person's torso is above the top of the
+      # frame and only their legs are left: at 0.6 m the camera sees the world
+      # from the floor to about 0.4 m. Requiring a torso of them cannot be
+      # met, and close is where a person matters most. A box that starts at
+      # the top edge (the body continues above the FOV) and fills most of the
+      # frame height is therefore judged on these thresholds instead, with the
+      # hip/knee/ankle count standing in for the torso -- a panel or a bean
+      # bag pressed against the camera has the same geometry but still no leg.
+      proximity_enabled: true
+      proximity_min_height_fraction: 0.6
+      proximity_top_margin: 8.0
+      # A cropped body scores lower than a whole one, so the box gates drop.
+      proximity_box_conf_acquire: 0.5
+      proximity_box_conf_retain: 0.3
+      proximity_min_valid_keypoints_acquire: 2
+      proximity_min_valid_keypoints_retain: 1
+      # Of the six hip/knee/ankle joints. This is what keeps props out.
+      proximity_min_lower_body_acquire: 2
+      proximity_min_lower_body_retain: 1
+      proximity_max_box_aspect_ratio: 2.5
       # Temporal confirmation: frames a blob must pass the acquire gate before
       # it is published, and how long a confirmed track survives without one.
       min_hits: 2

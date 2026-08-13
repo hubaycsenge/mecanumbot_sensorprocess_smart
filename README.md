@@ -38,7 +38,7 @@ consumes them yet.
 `launch/mecanumbot_peopledetect.launch.py` starts the LiDAR people detector, the
 camera people detector (with `from_topic` forced to `true`), and the
 detection-localization node in the `mecanumbot` namespace, all with
-`param/lidar_peopledetect_config.yaml` applied. Node names must match the YAML's
+`config/lidar_peopledetect_config.yaml` applied. Node names must match the YAML's
 top-level keys, so do not rename them in the launch file. The DeepStream and tennis
 ball nodes are not started by this launch file.
 
@@ -243,6 +243,16 @@ they do:
 | `min_torso_keypoints_retain`          | `1`     | ... and to retain.                                                             |
 | `min_box_height`                      | `40.0`  | Minimum box height in pixels, in both modes.                                   |
 | `max_box_aspect_ratio`                | `1.6`   | Maximum width/height, in both modes. People are taller than wide.              |
+| `proximity_enabled`                   | `true`  | Enables the close-range branch below; `false` restores torso-only behaviour.   |
+| `proximity_min_height_fraction`       | `0.6`   | Share of the frame height a box must fill to count as close.                   |
+| `proximity_top_margin`                | `8.0`   | Pixels from the top edge within which a box counts as clipped by it.           |
+| `proximity_box_conf_acquire`          | `0.5`   | Box confidence to acquire a close-range (cropped, therefore lower-scoring) body. |
+| `proximity_box_conf_retain`           | `0.3`   | ... and to retain it.                                                          |
+| `proximity_min_valid_keypoints_acquire` | `2`   | Joints over `keypoint_conf` needed to acquire at close range.                  |
+| `proximity_min_valid_keypoints_retain`  | `1`   | ... and to retain.                                                             |
+| `proximity_min_lower_body_acquire`    | `2`     | Of the six hip/knee/ankle joints, how many are needed to acquire close up.     |
+| `proximity_min_lower_body_retain`     | `1`     | ... and to retain.                                                             |
+| `proximity_max_box_aspect_ratio`      | `2.5`   | Maximum width/height for a close-range box.                                    |
 | `min_hits`                            | `2`     | Frames a blob must pass the acquire gate before anything is published.         |
 | `max_missed_time`                     | `0.5`   | Seconds a confirmed track survives without a detection.                        |
 | `iou_threshold`                       | `0.3`   | Minimum box IoU to associate a detection with an existing track.               |
@@ -277,6 +287,57 @@ along the same axis, so they are separated along three:
 An unconvincing frame updates no state at all: it neither refreshes a track nor starts
 one, so props never accumulate hits and a person who genuinely leaves expires on
 `max_missed_time`.
+
+#### Close range: the person standing next to the robot
+
+The camera is on the head, about **0.22 m** off the floor (`head_joint` at z = 0.168 in
+`mecanumbot.urdf`, plus the camera offset), with a vertical field of view of roughly
+**36°** at 1280×720. That geometry decides what a person looks like as they approach:
+
+| Distance | What is in frame                     | Torso keypoints available |
+| -------- | ------------------------------------ | ------------------------- |
+| 0.6 m    | floor to ~0.4 m — calves and knees    | none                      |
+| 1.5 m    | floor to ~0.7 m — up to mid-thigh     | none                      |
+| 2.3 m    | floor to ~0.95 m — hips just arrive   | hips                      |
+| 3.7 m    | floor to ~1.4 m — shoulders arrive    | hips and shoulders        |
+
+So a person closer than about 2.3 m has **no torso in the image at all**, and stage 1
+above — which requires `min_torso_keypoints_acquire` of the four shoulder/hip joints —
+could not acquire them however good the detection was. It is not a tuning problem: the
+evidence the gate asks for is outside the field of view. Close range is also where a
+person matters most, so the gate has a second branch for it.
+
+Which branch applies is decided from the **box geometry, not from the keypoints** —
+inferring "this is a close body" from the very joints the branch then stops requiring
+would make the relaxation self-justifying. A detection is close-range when its box
+starts within `proximity_top_margin` of the **top** edge (the body carries on above the
+field of view) and spans at least `proximity_min_height_fraction` of the frame height.
+For this camera those defaults amount to "nearer than roughly 3.4 m", which overlaps the
+2.3 m at which hips appear — the two branches cover the whole approach with no distance
+at which a person falls between them.
+
+On that branch the torso requirement is replaced by a **lower-body** one
+(`proximity_min_lower_body_*`, counted over hips, knees and ankles), the keypoint counts
+drop to `proximity_min_valid_keypoints_*`, the box-confidence gates drop to
+`proximity_box_conf_*` because a cropped body scores lower than a whole one, and the
+shape check loosens to `proximity_max_box_aspect_ratio` — legs seen from half a metre
+can be wider than the slice of them that fits in the frame is tall.
+
+What keeps the relaxation honest is that the geometry and the keypoints have to agree. A
+wall panel or a bean bag pushed up against the camera has exactly the same box geometry,
+but it still cannot produce a leg, and `best_keypoint_conf_*` is *not* relaxed on this
+branch. Small floor props are unaffected either way: they are not clipped by the top of
+the frame, so they are still judged on the ordinary gate.
+
+Detections accepted this way are published with `type` set to `close_range` rather than
+`full_body`. The bearing itself is computed exactly as usual, from whichever joints were
+found — legs give a bearing the way a whole body does — but a consumer that needs arms or
+a head (the ostensive tree reading gestures, for instance) can now tell that the upper
+body is *outside the frame* rather than merely undetected. On the debug image close-range
+boxes are green rather than blue and labelled `near`; rejections on this branch have
+their reason prefixed `near-`.
+
+Set `proximity_enabled: false` to go back to the torso-only behaviour.
 
 Note that `keypoint_conf` is a *visibility* threshold — it decides which joints are
 usable, published as coordinates rather than `NaN`, and fed into the angular bounds. It
@@ -453,8 +514,7 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 | mecanumbot_sensorprocess_smart/person_gating.py                        | Keypoint-evidence, hysteresis and temporal gate for camera detections. |
 | test/test_person_gating.py                                             | Unit tests for the detection gate; run without a ROS graph.          |
 | launch/mecanumbot_peopledetect.launch.py                               | Launches the people-detection pipeline with shared parameters.       |
-| param/lidar_peopledetect_config.yaml                                   | Runtime ROS parameters for node topics and thresholds.               |
-| config/lidar_peopledetect_config.yaml                                  | Identical copy of the param file, kept for deployment compatibility. |
+| config/lidar_peopledetect_config.yaml                                  | Runtime ROS parameters for node topics and thresholds.               |
 | models/dr_spaam_5_on_frog.pth                                          | DR-SPAAM pretrained weights used by the LiDAR detector.              |
 | models/dr_spaam.onnx                                                   | ONNX export of the DR-SPAAM model.                                   |
 | models/yolo26n-pose.pt                                                 | YOLO pose weights used by the Ultralytics camera detector.           |

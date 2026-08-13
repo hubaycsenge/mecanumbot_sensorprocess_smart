@@ -101,3 +101,5 @@ install/
 
 # Claude Code
 CLAUDE.md
+# pytest
+.pytest_cache/

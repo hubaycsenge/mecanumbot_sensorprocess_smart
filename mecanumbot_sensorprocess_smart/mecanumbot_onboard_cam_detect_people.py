@@ -4,7 +4,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import CompressedImage
 from mecanumbot_msgs.msg import CamPersonDetectionArray, CamPersonDetection
 from std_msgs.msg import Float32 as Float
-from std_msgs.msg import Header
+from std_msgs.msg import Header, String
 from geometry_msgs.msg import Pose, PoseArray, Point
 import os
 import gi
@@ -30,7 +30,15 @@ from mecanumbot_sensorprocess_smart.person_gating import (
     DetectionConfirmer,
     GateConfig,
     evaluate_evidence,
+    is_close_range,
 )
+
+# `CamPersonDetection.type`: how much of the body the detection is based on.
+# Close to the robot the camera, mounted at shin height, frames only the legs,
+# so a consumer that needs arms or a head -- the ostensive tree reading
+# gestures, for instance -- has to be able to tell the two apart.
+TYPE_FULL_BODY = "full_body"
+TYPE_CLOSE_RANGE = "close_range"
 
 # PersonKeypoints declares its 17 Pose fields in COCO-17 order, which is the
 # order the pose parser emits them in, so the two are filled by zipping.
@@ -108,6 +116,18 @@ class DeepStreamPersonDetectNode(Node):
                 ("detection_gate.min_torso_keypoints_retain", 1),
                 ("detection_gate.min_box_height", 40.0),
                 ("detection_gate.max_box_aspect_ratio", 1.6),
+                # ---- close range: only the legs of a nearby person are in
+                # frame, so the torso requirement is unmeetable ----
+                ("detection_gate.proximity_enabled", True),
+                ("detection_gate.proximity_min_height_fraction", 0.6),
+                ("detection_gate.proximity_top_margin", 8.0),
+                ("detection_gate.proximity_box_conf_acquire", 0.5),
+                ("detection_gate.proximity_box_conf_retain", 0.3),
+                ("detection_gate.proximity_min_valid_keypoints_acquire", 2),
+                ("detection_gate.proximity_min_valid_keypoints_retain", 1),
+                ("detection_gate.proximity_min_lower_body_acquire", 2),
+                ("detection_gate.proximity_min_lower_body_retain", 1),
+                ("detection_gate.proximity_max_box_aspect_ratio", 2.5),
                 ("detection_gate.min_hits", 2),
                 ("detection_gate.max_missed_time", 0.5),
                 ("detection_gate.iou_threshold", 0.3),
@@ -325,6 +345,26 @@ class DeepStreamPersonDetectNode(Node):
             min_torso_keypoints_retain=int(gate("min_torso_keypoints_retain")),
             min_box_height=float(gate("min_box_height")),
             max_box_aspect_ratio=float(gate("max_box_aspect_ratio")),
+            proximity_enabled=bool(gate("proximity_enabled")),
+            proximity_min_height_fraction=float(gate("proximity_min_height_fraction")),
+            proximity_top_margin=float(gate("proximity_top_margin")),
+            proximity_box_conf_acquire=float(gate("proximity_box_conf_acquire")),
+            proximity_box_conf_retain=float(gate("proximity_box_conf_retain")),
+            proximity_min_valid_keypoints_acquire=int(
+                gate("proximity_min_valid_keypoints_acquire")
+            ),
+            proximity_min_valid_keypoints_retain=int(
+                gate("proximity_min_valid_keypoints_retain")
+            ),
+            proximity_min_lower_body_acquire=int(
+                gate("proximity_min_lower_body_acquire")
+            ),
+            proximity_min_lower_body_retain=int(
+                gate("proximity_min_lower_body_retain")
+            ),
+            proximity_max_box_aspect_ratio=float(
+                gate("proximity_max_box_aspect_ratio")
+            ),
             min_hits=int(gate("min_hits")),
             max_missed_time=float(gate("max_missed_time")),
             iou_threshold=float(gate("iou_threshold")),
@@ -343,6 +383,13 @@ class DeepStreamPersonDetectNode(Node):
                 f"detection_gate.keypoint_conf ({config.keypoint_conf}) is at or above "
                 "box_conf_acquire; joints on partly occluded people will be discarded."
             )
+        if config.proximity_box_conf_retain > config.proximity_box_conf_acquire:
+            self.get_logger().warn(
+                f"detection_gate.proximity_box_conf_retain "
+                f"({config.proximity_box_conf_retain}) is above "
+                f"proximity_box_conf_acquire ({config.proximity_box_conf_acquire}); "
+                "hysteresis is inverted for close-range detections."
+            )
 
         self.get_logger().info(
             "Detection gate: acquire on box>"
@@ -352,6 +399,20 @@ class DeepStreamPersonDetectNode(Node):
             f"retain on box>{config.box_conf_retain:.2f} for up to "
             f"{config.max_missed_time:.2f}s."
         )
+        if config.proximity_enabled:
+            self.get_logger().info(
+                "Close-range branch: boxes starting within "
+                f"{config.proximity_top_margin:.0f}px of the top edge and covering "
+                f">={config.proximity_min_height_fraction:.0%} of the frame height "
+                f"acquire on box>{config.proximity_box_conf_acquire:.2f} with "
+                f">={config.proximity_min_lower_body_acquire} hip/knee/ankle joints "
+                "and no torso requirement."
+            )
+        else:
+            self.get_logger().info(
+                "Close-range branch disabled; a person nearer than about 2m has no "
+                "torso in frame and will not be acquired."
+            )
         return config
 
     def _resolve_keypoint_scaling(self, nvinfer_config):
@@ -511,9 +572,18 @@ class DeepStreamPersonDetectNode(Node):
             pixel_kpts.append((conf, px, py))
         return pixel_kpts
 
-    def _build_person_msg(self, pixel_kpts, rect):
-        """Build one CamPersonDetection from pixel-space keypoints and its box."""
+    def _build_person_msg(self, pixel_kpts, rect, close_range=False):
+        """Build one CamPersonDetection from pixel-space keypoints and its box.
+
+        `close_range` only labels the detection: the bearing is computed from
+        whichever joints were found, so legs alone give a bearing exactly the
+        way a whole body does. What the label carries is that the upper body is
+        outside the frame rather than merely undetected.
+        """
         person_msg = CamPersonDetection()
+        person_msg.type = String(
+            data=TYPE_CLOSE_RANGE if close_range else TYPE_FULL_BODY
+        )
 
         # Normalized [0, 1] coordinates; joints below the visibility threshold
         # become NaN inside XYN_to_Pose. KEYPOINT_FIELDS is in COCO-17 order,
@@ -584,28 +654,41 @@ class DeepStreamPersonDetectNode(Node):
                             rect[2],
                             rect[3],
                             self.gate_config,
+                            box_top=rect[1],
+                            image_height=self.camera_height,
                         ),
                     }
                 )
             l_obj = l_obj.next
         return candidates
 
-    def _draw_detection(self, debug_img, candidate, accepted, reason):
+    def _draw_detection(
+        self, debug_img, candidate, accepted, reason, close_range=False
+    ):
         """Annotate one candidate, accepted or not.
 
         Rejected boxes are drawn too, in red and labelled with the check they
         failed -- tuning the gate is impossible without seeing what it threw
-        away and why.
+        away and why. Accepted close-range boxes are drawn green rather than
+        blue, so which of the two gates let a box through is visible without
+        reading the label.
         """
         rect = candidate["rect"]
         pixel_kpts = candidate["keypoints"]
-        colour = (255, 0, 0) if accepted else (0, 0, 255)
+        if not accepted:
+            colour = (0, 0, 255)
+        elif close_range:
+            colour = (0, 200, 0)
+        else:
+            colour = (255, 0, 0)
 
         x1, y1 = int(rect[0]), int(rect[1])
         w, h = int(rect[2]), int(rect[3])
         cv2.rectangle(debug_img, (x1, y1), (x1 + w, y1 + h), colour, 2)
 
         box_label = f"{candidate['confidence']:.2f}"
+        if close_range:
+            box_label += " near"
         if not accepted:
             box_label += f" {reason}"
         (text_w, text_h), baseline = cv2.getTextSize(
@@ -709,10 +792,13 @@ class DeepStreamPersonDetectNode(Node):
 
             hri_candidates = []
             for candidate, (accepted, reason) in zip(candidates, verdicts):
+                close_range = is_close_range(candidate["evidence"], self.gate_config)
                 if accepted:
                     detected_people.append(
                         self._build_person_msg(
-                            candidate["keypoints"], candidate["rect"]
+                            candidate["keypoints"],
+                            candidate["rect"],
+                            close_range=close_range,
                         )
                     )
                     if self.ros4hri_enabled:
@@ -723,7 +809,9 @@ class DeepStreamPersonDetectNode(Node):
                     )
 
                 if self.debug_mode:
-                    self._draw_detection(debug_img, candidate, accepted, reason)
+                    self._draw_detection(
+                        debug_img, candidate, accepted, reason, close_range
+                    )
 
             if self.ros4hri_enabled:
                 self._submit_ros4hri(hri_candidates)

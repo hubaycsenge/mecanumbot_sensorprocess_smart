@@ -13,14 +13,19 @@ import pytest
 from mecanumbot_sensorprocess_smart.person_gating import (
     DetectionConfirmer,
     GateConfig,
+    LEFT_ANKLE,
     LEFT_HIP,
+    LEFT_KNEE,
     LEFT_SHOULDER,
     NUM_KEYPOINTS,
+    RIGHT_ANKLE,
     RIGHT_HIP,
+    RIGHT_KNEE,
     RIGHT_SHOULDER,
     check_evidence,
     evaluate_evidence,
     iou,
+    is_close_range,
 )
 
 CONFIG = GateConfig()
@@ -30,6 +35,13 @@ CONFIG = GateConfig()
 PERSON_BOX = (100.0, 50.0, 200.0, 450.0)  # xmin, ymin, xmax, ymax
 PERSON_W = PERSON_BOX[2] - PERSON_BOX[0]
 PERSON_H = PERSON_BOX[3] - PERSON_BOX[1]
+
+# A 720p frame, and in it the box of someone standing close enough that the
+# camera -- mounted at shin height -- frames their legs only: it starts at the
+# top edge because the body carries on above the field of view, and runs most
+# of the way down the image.
+IMAGE_HEIGHT = 720.0
+NEAR_BOX = (400.0, 0.0, 700.0, 690.0)
 
 
 def keypoints(confidences):
@@ -54,10 +66,25 @@ def prop_keypoints():
     return keypoints([0.12] * NUM_KEYPOINTS)
 
 
-def evidence_for(kpts, box_conf, box=PERSON_BOX):
+def legs_keypoints(conf=0.9, joints=(LEFT_KNEE, RIGHT_KNEE, LEFT_ANKLE, RIGHT_ANKLE)):
+    """Build what is left of a person standing too close for their torso."""
+    confidences = [0.05] * NUM_KEYPOINTS
+    for index in joints:
+        confidences[index] = conf
+    return keypoints(confidences)
+
+
+def evidence_for(kpts, box_conf, box=PERSON_BOX, image_height=0.0):
     width = box[2] - box[0]
     height = box[3] - box[1]
-    return evaluate_evidence(kpts, box_conf, width, height, CONFIG)
+    return evaluate_evidence(
+        kpts, box_conf, width, height, CONFIG, box_top=box[1], image_height=image_height
+    )
+
+
+def near_evidence(kpts, box_conf=0.7, box=NEAR_BOX):
+    """Evidence for a detection the close-range branch will pick up."""
+    return evidence_for(kpts, box_conf, box=box, image_height=IMAGE_HEIGHT)
 
 
 class TestEvidence:
@@ -127,6 +154,108 @@ class TestRetainGate:
     def test_prop_fails_retain_as_well(self):
         ev = evidence_for(prop_keypoints(), 0.95)
         assert not check_evidence(ev, CONFIG, strict=False)[0]
+
+
+class TestCloseRange:
+    """The person-standing-next-to-the-robot case.
+
+    The camera is on the head at roughly 0.2 m, so from about three metres in
+    the torso is above the top of the frame and only the legs are left. These
+    tests pin down that such a person is still detected, and that relaxing the
+    torso requirement to get them does not also admit a prop.
+    """
+
+    def test_geometry_decides_what_counts_as_close(self):
+        assert is_close_range(near_evidence(legs_keypoints()), CONFIG)
+        # Same detection, but the box sits in the middle of the frame: the body
+        # ends inside the field of view, so it is not a cropped near body.
+        mid_box = (400.0, 120.0, 700.0, 600.0)
+        assert not is_close_range(
+            evidence_for(legs_keypoints(), 0.7, mid_box, IMAGE_HEIGHT), CONFIG
+        )
+        # Top-clipped but small: something in the distance, not up close.
+        short_box = (400.0, 0.0, 700.0, 300.0)
+        assert not is_close_range(
+            evidence_for(legs_keypoints(), 0.7, short_box, IMAGE_HEIGHT), CONFIG
+        )
+
+    def test_frame_height_is_needed_to_judge_proximity(self):
+        # Without it there is no way to tell a cropped body from a whole one,
+        # so the detection is judged on the ordinary gate.
+        assert not is_close_range(evidence_for(legs_keypoints(), 0.7), CONFIG)
+
+    def test_legs_only_person_is_rejected_by_the_ordinary_gate(self):
+        # This is the bug the close-range branch exists for: nothing is wrong
+        # with the detection, the torso is simply not in the picture.
+        passed, reason = check_evidence(
+            evidence_for(legs_keypoints(), 0.7), CONFIG, strict=True
+        )
+        assert not passed
+        assert "torso" in reason
+
+    def test_legs_only_person_is_acquired_when_the_box_says_close(self):
+        passed, reason = check_evidence(
+            near_evidence(legs_keypoints()), CONFIG, strict=True
+        )
+        assert passed, reason
+        assert reason == "near-ok"
+
+    def test_one_leg_is_enough_to_retain_but_not_to_acquire(self):
+        # Half a stride, or one leg behind the other: two joints on one leg.
+        one_leg = near_evidence(legs_keypoints(joints=(LEFT_KNEE,)), box_conf=0.4)
+        assert not check_evidence(one_leg, CONFIG, strict=True)[0]
+        assert check_evidence(one_leg, CONFIG, strict=False)[0]
+
+    def test_frame_filling_prop_is_still_rejected(self):
+        # A wall panel pushed up against the camera has exactly the geometry
+        # the close-range branch looks for -- and no leg to show for it.
+        passed, reason = check_evidence(
+            near_evidence(prop_keypoints(), box_conf=0.95), CONFIG, strict=True
+        )
+        assert not passed
+        assert reason.startswith("near-")
+        assert "keypoints" in reason
+
+    def test_hips_alone_satisfy_the_lower_body_requirement(self):
+        # At the far edge of the close-range band the hips are the lowest part
+        # of the torso still in frame, and they count as lower body.
+        hips = near_evidence(legs_keypoints(joints=(LEFT_HIP, RIGHT_HIP)))
+        assert check_evidence(hips, CONFIG, strict=True)[0]
+
+    def test_wide_leg_box_is_allowed_only_at_close_range(self):
+        # Legs a metre from the lens are wide relative to the slice of them
+        # that fits in the frame; the standing-person shape check would reject
+        # the same box at a distance.
+        wide = (100.0, 0.0, 1500.0, 700.0)  # 1400x700, ratio 2.0
+        assert check_evidence(
+            evidence_for(legs_keypoints(), 0.7, wide, IMAGE_HEIGHT), CONFIG, strict=True
+        )[0]
+        assert not check_evidence(
+            evidence_for(person_keypoints(), 0.9, wide), CONFIG, strict=True
+        )[0]
+
+    def test_branch_can_be_switched_off(self):
+        cfg = GateConfig(proximity_enabled=False)
+        assert not is_close_range(near_evidence(legs_keypoints()), cfg)
+        assert not check_evidence(near_evidence(legs_keypoints()), cfg, strict=True)[0]
+
+    def test_close_person_is_confirmed_and_published(self):
+        confirmer = DetectionConfirmer(CONFIG)
+        candidate = (NEAR_BOX, near_evidence(legs_keypoints()))
+        assert confirmer.update([candidate], 0.0)[0][0] is False  # unconfirmed
+        assert confirmer.update([candidate], 0.1)[0] == (True, "near-ok")
+
+    def test_person_walking_towards_the_robot_keeps_its_track(self):
+        # Whole body at a distance, then legs only as they arrive: the branch
+        # changes underneath the track, which must not restart it.
+        confirmer = DetectionConfirmer(CONFIG)
+        far = (NEAR_BOX, evidence_for(person_keypoints(), 0.9, NEAR_BOX))
+        confirmer.update([far], 0.0)
+        assert confirmer.update([far], 0.1)[0][0] is True
+
+        near = (NEAR_BOX, near_evidence(legs_keypoints()))
+        assert confirmer.update([near], 0.2)[0][0] is True
+        assert confirmer.track_count == 1
 
 
 class TestIou:
