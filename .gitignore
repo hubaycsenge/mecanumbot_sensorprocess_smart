@@ -103,3 +103,7 @@ install/
 CLAUDE.md
 # pytest
 .pytest_cache/
+
+# TensorRT engines are machine- and JetPack-specific build artifacts:
+# nvinfer rebuilds them from the .onnx on first launch, or models/build_engine.py does.
+*.engine
