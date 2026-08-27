@@ -48,8 +48,12 @@ mecanumbot_cam_detect_people_ds:
       frame_id: ''
     # How to invert the nvinfer input resize when mapping keypoints back to
     # pixels: letterbox | stretch | auto (auto reads maintain-aspect-ratio from
-    # deepstream_config/config_infer_yolo26_pose.txt).
-    keypoint_scaling: letterbox
+    # deepstream_config/config_infer_yolo26_pose.txt). Keep this on auto: the
+    # config sets maintain-aspect-ratio=0, so nvinfer stretches rather than
+    # pads, and the letterbox mapping then invents padding that is not there --
+    # at 1280x720 that puts every joint at 1.78*y - 280 whatever the network
+    # size, which is a skeleton stretched off the bottom of its own box.
+    keypoint_scaling: auto
 
     # ---- detection gate ----
     # A detection is accepted on keypoint evidence and temporal consistency,

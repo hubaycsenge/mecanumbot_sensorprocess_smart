@@ -18,6 +18,13 @@ batch-size=1
 # it looks for and rebuilds from scratch on every launch.
 network-mode=2
 num-detected-classes=1
+# The imgsz the ONNX was exported at (channels;height;width). nvinfer takes the
+# real shape from the model, so this is here to be cross-checked against the
+# network size the parser reports at runtime: the engine filename does not
+# encode the input size, so an engine built from an earlier export is loaded
+# silently and keeps running at its own size. Keep it in step with
+# models/conv_to_onnx.py, and delete the engine after re-exporting.
+infer-dims=3;1280;1280
 interval=0
 gie-unique-id=16
 process-mode=1

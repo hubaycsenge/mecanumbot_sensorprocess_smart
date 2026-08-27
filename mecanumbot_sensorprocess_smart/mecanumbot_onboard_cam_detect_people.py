@@ -82,6 +82,13 @@ SKELETON_CONNECTIONS = [
     (14, 16),  # Legs
 ]
 
+# A skeleton has to land inside its own bounding box. These decide when the
+# node is entitled to say that it did not: how many joints have to be visible
+# before the frame is worth judging, and how far outside the box a joint may
+# still sit (as a fraction of the box) before it counts as outside it.
+KEYPOINT_ALIGNMENT_MIN_VISIBLE = 4
+KEYPOINT_ALIGNMENT_MARGIN = 0.25
+
 
 class DeepStreamPersonDetectNode(Node):
     def __init__(self, namespace=""):
@@ -96,7 +103,7 @@ class DeepStreamPersonDetectNode(Node):
                 ("camera_topic", "camera/image_raw/compressed"),
                 ("webcam_device", "/dev/video0"),
                 ("debug_mode", False),
-                ("keypoint_scaling", "letterbox"),
+                ("keypoint_scaling", "auto"),
                 ("ros4hri.enabled", True),
                 ("ros4hri.prefix", "/humans"),
                 ("ros4hri.publish_rate", 30.0),
@@ -211,6 +218,8 @@ class DeepStreamPersonDetectNode(Node):
         self.network_input_size = self._read_infer_dims(nvinfer_config)
         self._announced_frame_size = False
         self._announced_network_size = False
+        self._warned_network_size = False
+        self._checked_alignment = False
 
         # --- NEW ELEMENTS FOR IMAGE EXTRACTION ---
         # Converts infer output format to RGBA so Python can read it
@@ -544,10 +553,62 @@ class DeepStreamPersonDetectNode(Node):
         else:
             self.get_logger().info(message)
 
+    def _resolve_network_size(self, mask_params):
+        """
+        Return the network input size the keypoints are expressed in.
+
+        The parser stamps the network dimensions onto every mask it emits, so
+        the metadata is the only source that reflects the engine nvinfer
+        actually loaded. `infer-dims` says what the config asks for, which is
+        not the same thing: the engine filename carries no input size, so an
+        engine built from an earlier export keeps being loaded and keeps
+        running at its own size however the ONNX changes. The declared size is
+        therefore used to cross-check the metadata, never to override it.
+        """
+        net_width = float(getattr(mask_params, "width", 0.0) or 0.0)
+        net_height = float(getattr(mask_params, "height", 0.0) or 0.0)
+        declared = self.network_input_size
+
+        if net_width > 0.0 and net_height > 0.0:
+            if (
+                declared is not None
+                and (int(net_width), int(net_height)) != tuple(declared)
+                and not self._warned_network_size
+            ):
+                self._warned_network_size = True
+                self.get_logger().warn(
+                    f"The metadata reports a {int(net_width)}x{int(net_height)} "
+                    f"network, but infer-dims declares {declared[0]}x{declared[1]}. "
+                    "That is what a stale model-engine-file looks like: nvinfer "
+                    "does not rebuild an engine when the ONNX behind it is "
+                    "re-exported at a different imgsz. Delete the engine to force a "
+                    "rebuild. The metadata size is the one used here, being the one "
+                    "that actually ran."
+                )
+            return net_width, net_height
+
+        if declared is not None:
+            if not self._warned_network_size:
+                self._warned_network_size = True
+                self.get_logger().warn(
+                    "The mask metadata carries no network size; falling back to the "
+                    f"{declared[0]}x{declared[1]} infer-dims from the nvinfer config."
+                )
+            return float(declared[0]), float(declared[1])
+
+        if not self._warned_network_size:
+            self._warned_network_size = True
+            self.get_logger().error(
+                "The mask metadata carries no network size and the nvinfer config "
+                "sets no infer-dims, so there is nothing to undo the input resize "
+                "with. The keypoints are left in network coordinates, which is only "
+                "right if the network input happens to match the frame."
+            )
+        return float(self.camera_width), float(self.camera_height)
+
     def _network_to_pixel_transform(self, mask_params):
         """Return (gain_x, gain_y, pad_x, pad_y) undoing the nvinfer input resize."""
-        net_width = float(mask_params.width)
-        net_height = float(mask_params.height)
+        net_width, net_height = self._resolve_network_size(mask_params)
 
         if not self._announced_network_size:
             self._announced_network_size = True
@@ -667,6 +728,53 @@ class DeepStreamPersonDetectNode(Node):
             pixel_kpts.append((conf, px, py))
         return pixel_kpts
 
+    def _check_keypoint_alignment(self, pixel_kpts, rect):
+        """
+        Report once when the mapped keypoints miss their own bounding box.
+
+        `rect_params` arrives already in frame pixels -- nvinfer undoes its own
+        input resize for the box -- so the box is an independent witness to the
+        mapping applied to the keypoints here. A skeleton drawn outside its own
+        box means the two disagree, and nothing else says so: the detection is
+        still published, with bearings read off joints that are in the wrong
+        place. Judged on the first frame that shows enough of a body, because
+        a mapping error is systematic and one frame settles it.
+        """
+        if self._checked_alignment:
+            return
+        visible = [
+            (px, py) for conf, px, py in pixel_kpts if conf > self.min_conf_threshold
+        ]
+        if len(visible) < KEYPOINT_ALIGNMENT_MIN_VISIBLE:
+            return
+        self._checked_alignment = True
+
+        left, top, width, height = rect
+        margin_x = width * KEYPOINT_ALIGNMENT_MARGIN
+        margin_y = height * KEYPOINT_ALIGNMENT_MARGIN
+        inside = sum(
+            1
+            for px, py in visible
+            if left - margin_x <= px <= left + width + margin_x
+            and top - margin_y <= py <= top + height + margin_y
+        )
+        if inside * 2 >= len(visible):
+            return
+
+        xs = [px for px, _ in visible]
+        ys = [py for _, py in visible]
+        self.get_logger().warn(
+            f"Only {inside} of {len(visible)} mapped keypoints land inside their own "
+            f"box: the joints span x {min(xs):.0f}..{max(xs):.0f}, y "
+            f"{min(ys):.0f}..{max(ys):.0f}, while the box is ({left:.0f},{top:.0f}) "
+            f"{width:.0f}x{height:.0f}. The box is mapped into pixels by nvinfer and "
+            "the keypoints by this node, so the two mappings disagree. Check "
+            f"keypoint_scaling (now '{self.keypoint_scaling}') against "
+            "maintain-aspect-ratio in the nvinfer config, and the network input size "
+            "logged above against the model that was meant to be loaded. Every "
+            "bearing this node reports is wrong until they agree. Reported once."
+        )
+
     def _build_person_msg(self, pixel_kpts, rect, close_range=False):
         """Build one CamPersonDetection from pixel-space keypoints and its box.
 
@@ -738,6 +846,7 @@ class DeepStreamPersonDetectNode(Node):
                     float(obj_meta.rect_params.height),
                 )
                 pixel_kpts = self._pixel_keypoints(keypoints, mask_params)
+                self._check_keypoint_alignment(pixel_kpts, rect)
                 candidates.append(
                     {
                         "rect": rect,

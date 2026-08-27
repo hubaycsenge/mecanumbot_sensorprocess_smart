@@ -218,7 +218,7 @@ ROS node name: `mecanumbot_cam_detect_people_ds`.
 | `camera_topic`                | `camera/image_raw/compressed` | Compressed image input topic.                                                         |
 | `webcam_device`               | `/dev/video0`                 | V4L2 device used in webcam mode.                                                      |
 | `debug_mode`                  | `false`                       | Enables the annotated debug image publisher.                                          |
-| `keypoint_scaling`            | `letterbox`                   | How to invert the `nvinfer` input resize: `letterbox`, `stretch`, or `auto`.           |
+| `keypoint_scaling`            | `auto`                        | How to invert the `nvinfer` input resize: `letterbox`, `stretch`, or `auto`.           |
 | `ros4hri.enabled`             | `true`                        | Publishes the `/humans/bodies` tree in addition to the native messages.               |
 | `ros4hri.prefix`              | `/humans`                     | Root of the ROS4HRI topic tree. Absolute, so the node namespace does not shift it.    |
 | `ros4hri.publish_rate`        | `30.0`                        | Hz at which queued bodies are published and per-body publishers reconciled.           |
@@ -407,11 +407,30 @@ is decided by `maintain-aspect-ratio` in the nvinfer config:
 - `stretch` (`maintain-aspect-ratio=0`): x and y scaled independently, no padding.
 - `auto`: read `maintain-aspect-ratio` out of the config file and pick accordingly.
 
-Note that the shipped `config_infer_yolo26_pose.txt` sets `maintain-aspect-ratio=0`
-(stretch) while the default `letterbox` mapping assumes padding. With a 1280x720 source
-and a 640x640 network the two disagree in y by 280 px (`2*ky - 280` versus `1.125*ky`),
-while agreeing in x. The default is left at `letterbox` so behaviour does not change
-silently; switch to `auto` or `stretch` to make the mapping consistent with the config.
+The shipped `config_infer_yolo26_pose.txt` sets `maintain-aspect-ratio=0`, so the
+default is `auto` and resolves to `stretch`. Choosing `letterbox` against that config
+invents padding that `nvinfer` never added: at 1280x720 it puts every joint at
+`1.78*y - 280`, i.e. a skeleton stretched by nearly a factor of two and pushed off the
+bottom of its own box, while leaving x correct. The error is **independent of the
+network size** — 640x640 and 1280x1280 give the same wrong `1.78*y - 280` — so changing
+the exported `imgsz` neither causes nor cures it.
+
+The network size itself is taken from the mask metadata, which the parser stamps with
+the dimensions of the engine that actually ran. `infer-dims` in the nvinfer config
+records the size the ONNX was exported at and is used only to cross-check it, because
+the two can genuinely differ: the engine filename encodes the batch, the GPU and the
+precision but **not the input size**, so after re-exporting the ONNX at a new `imgsz`
+`nvinfer` loads the old engine and keeps running at the old size. A mismatch is a
+warning at the first detection; the fix is to delete the `model-engine-file` and let it
+rebuild.
+
+Whichever mapping is in force, the node checks it once against the bounding box:
+`rect_params` reaches the probe already in frame pixels, mapped by `nvinfer` itself, so
+a skeleton that lands outside its own box means the node's mapping and `nvinfer`'s
+disagree. That warning names both suspects — `keypoint_scaling` and the network size —
+because the failure is otherwise silent: detections still publish, with bearings read
+off joints that are in the wrong place, and the fusion in
+`mecanumbot_locate_detections` then fails to confirm the people the LiDAR found.
 
 ### Behavior
 
@@ -427,16 +446,21 @@ silently; switch to `auto` or `stretch` to make the mapping consistent with the 
   `source → nvvideoconvert → nvstreammux → nvinfer → nvvideoconvert → capsfilter(RGBA) → fakesink`,
   with a buffer probe on the capsfilter reading the inference metadata.
 - Supports either a ROS image topic or direct webcam input.
-- Extracts pose keypoints from NVIDIA metadata, removes the letterbox padding, and
-  normalizes them to `[0, 1]` before mapping into `CamPersonDetection` messages.
+- Extracts pose keypoints from NVIDIA metadata, undoes the `nvinfer` input resize
+  (see *Keypoint scaling*), and normalizes them to `[0, 1]` before mapping into
+  `CamPersonDetection` messages.
 - Unmaps the NvDs buffer surface after every frame to avoid leaking memory on Jetson.
 
 ### DeepStream configuration
 
 `deepstream_config/config_infer_yolo26_pose.txt` points `nvinfer` at
-`models/yolo26n-pose.onnx` and its FP16 engine, and at the `DeepStream-Yolo-Pose`
+`models/yolo26m-pose.onnx` and its FP16 engine, and at the `DeepStream-Yolo-Pose`
 custom parser library. These are **absolute paths under `/home/ubuntu/`** — they have
 to be edited to match the deployment machine before this node will start.
+
+`models/conv_to_onnx.py` exports the ONNX and fixes the `imgsz` (currently 1280);
+`infer-dims` in the nvinfer config has to be kept in step with it, and the existing
+`.engine` deleted, or `nvinfer` silently keeps running the previous size.
 
 ## Node: mecanumbot_locate_detections
 
