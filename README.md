@@ -415,6 +415,14 @@ silently; switch to `auto` or `stretch` to make the mapping consistent with the 
 
 ### Behavior
 
+- Announces its input geometry at startup: the requested frame size and source, the
+  `nvstreammux` size and the horizontal FOV, plus the network input size — read from
+  `infer-dims` if the nvinfer config sets it, otherwise reported from the first inferred
+  frame, since without `infer-dims` nvinfer takes the shape from the model itself. The
+  size the source *actually* delivered is logged from the first frame as well, and a
+  mismatch against `camera_params` is a warning when the aspect ratios differ: every
+  bearing is derived from a keypoint's x within `camera_width`, so a frame that
+  `nvstreammux` had to distort into that shape makes all of them wrong.
 - Uses GStreamer and NVIDIA DeepStream instead of the pure PyTorch/OpenCV path:
   `source → nvvideoconvert → nvstreammux → nvinfer → nvvideoconvert → capsfilter(RGBA) → fakesink`,
   with a buffer probe on the capsfilter reading the inference metadata.

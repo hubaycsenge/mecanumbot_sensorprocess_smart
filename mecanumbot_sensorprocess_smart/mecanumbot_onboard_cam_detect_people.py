@@ -208,6 +208,9 @@ class DeepStreamPersonDetectNode(Node):
         )
         self.nvinfer.set_property("config-file-path", nvinfer_config)
         self._resolve_keypoint_scaling(nvinfer_config)
+        self.network_input_size = self._read_infer_dims(nvinfer_config)
+        self._announced_frame_size = False
+        self._announced_network_size = False
 
         # --- NEW ELEMENTS FOR IMAGE EXTRACTION ---
         # Converts infer output format to RGBA so Python can read it
@@ -326,6 +329,7 @@ class DeepStreamPersonDetectNode(Node):
 
         self.pipeline.set_state(Gst.State.PLAYING)
         self.get_logger().info("DeepStream Pipeline Running!")
+        self._announce_input_geometry()
 
     def _build_gate_config(self):
         """Assemble the detection gate thresholds from the ROS parameters."""
@@ -457,10 +461,101 @@ class DeepStreamPersonDetectNode(Node):
                 f"(maintain-aspect-ratio={maintain_aspect_ratio})"
             )
 
+    def _read_infer_dims(self, nvinfer_config):
+        """
+        Return the configured network input as (width, height), or None.
+
+        `infer-dims` is optional: without it nvinfer takes the input shape from
+        the model, which is only knowable once inference has run. The real
+        value is announced from the first inferred frame instead.
+        """
+        try:
+            with open(nvinfer_config, "r") as config_file:
+                for line in config_file:
+                    line = line.split("#", 1)[0].strip()
+                    if line.startswith("infer-dims"):
+                        # DeepStream spells this channels;height;width.
+                        dims = line.split("=", 1)[1].strip().split(";")
+                        return (int(dims[2]), int(dims[1]))
+        except (OSError, ValueError, IndexError) as exc:
+            self.get_logger().warn(
+                f"Could not read infer-dims from {nvinfer_config}: {exc}"
+            )
+        return None
+
+    def _announce_input_geometry(self):
+        """
+        Log the frame and network geometry the angular mapping depends on.
+
+        Every bearing this node reports is derived from a keypoint's x within
+        `camera_width`, so a source that does not deliver that size is worth
+        seeing in the log rather than inferring from wrong angles.
+        """
+        if self.from_topic:
+            source = f"topic '{self.get_parameter('camera_topic').value}'"
+        else:
+            source = f"webcam {self.webcam_device}"
+        self.get_logger().info(
+            f"Input image: {self.camera_width}x{self.camera_height} requested from "
+            f"{source}, streammux {self.camera_width}x{self.camera_height}, "
+            f"HFOV {math.degrees(self.camera_fov):.1f} deg."
+        )
+        if self.network_input_size is None:
+            self.get_logger().info(
+                "Network input: taken from the model (no infer-dims in the nvinfer "
+                "config); announced from the first inferred frame."
+            )
+        else:
+            net_width, net_height = self.network_input_size
+            self.get_logger().info(
+                f"Network input: {net_width}x{net_height} (infer-dims), undone with "
+                f"the {self.keypoint_scaling} mapping."
+            )
+
+    def _announce_frame_size(self, frame_meta):
+        """
+        Log the size the source really delivered, once, and flag a mismatch.
+
+        nvstreammux rescales whatever arrives to `camera_width`x`camera_height`,
+        so a differing aspect ratio is silently distorted into that frame and
+        every angle derived from it is off.
+        """
+        self._announced_frame_size = True
+        # Older pyds builds do not carry the source frame size on the metadata.
+        width = int(getattr(frame_meta, "source_frame_width", 0) or 0)
+        height = int(getattr(frame_meta, "source_frame_height", 0) or 0)
+        if not width or not height:
+            return
+        self.get_logger().info(f"First frame arrived at {width}x{height}.")
+        if (width, height) == (self.camera_width, self.camera_height):
+            return
+        source_aspect = width / height
+        configured_aspect = self.camera_width / self.camera_height
+        message = (
+            f"Source delivers {width}x{height} but camera_params say "
+            f"{self.camera_width}x{self.camera_height}; nvstreammux is rescaling."
+        )
+        if abs(source_aspect - configured_aspect) > 0.01:
+            self.get_logger().warn(
+                f"{message} The aspect ratios differ ({source_aspect:.3f} vs "
+                f"{configured_aspect:.3f}), so the frame is distorted and every "
+                "reported angle is wrong until the two match."
+            )
+        else:
+            self.get_logger().info(message)
+
     def _network_to_pixel_transform(self, mask_params):
         """Return (gain_x, gain_y, pad_x, pad_y) undoing the nvinfer input resize."""
         net_width = float(mask_params.width)
         net_height = float(mask_params.height)
+
+        if not self._announced_network_size:
+            self._announced_network_size = True
+            self.get_logger().info(
+                f"Network input: {int(net_width)}x{int(net_height)}, undone with the "
+                f"{self.keypoint_scaling} mapping onto "
+                f"{self.camera_width}x{self.camera_height} pixels."
+            )
 
         if self.keypoint_scaling == "stretch":
             return (
@@ -774,6 +869,9 @@ class DeepStreamPersonDetectNode(Node):
                 frame_meta = pyds.NvDsFrameMeta.cast(l_frame.data)
             except StopIteration:
                 break
+
+            if not self._announced_frame_size:
+                self._announce_frame_size(frame_meta)
 
             n_frame = pyds.get_nvds_buf_surface(hash(gst_buffer), frame_meta.batch_id)
             frame_copy = np.array(n_frame, copy=True, order="C")
