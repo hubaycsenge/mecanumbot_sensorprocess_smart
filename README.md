@@ -424,6 +424,16 @@ precision but **not the input size**, so after re-exporting the ONNX at a new `i
 warning at the first detection; the fix is to delete the `model-engine-file` and let it
 rebuild.
 
+With `debug_mode` on, the node dumps every number the mapping depends on once, from
+the first detection: the surface it draws the debug image on, `mask_params` (dimensions
+and float count), the `camera_params`, the resolved mapping, the box as `nvinfer`
+mapped it, and the first four raw triplets next to what they mapped to. A misplaced
+skeleton looks the same whichever link in the chain broke, and that one line separates
+them — in particular, the raw triplets are `(conf, x, y)` if the first number of each is
+in `[0, 1]`, and `(x, y, conf)` if the last one is. Upstream `DeepStream-Yolo-Pose`
+writes `(x, y, conf)`; this node reads `(conf, x, y)`, so a checkout that follows
+upstream needs the triplet reversed here.
+
 Whichever mapping is in force, the node checks it once against the bounding box:
 `rect_params` reaches the probe already in frame pixels, mapped by `nvinfer` itself, so
 a skeleton that lands outside its own box means the node's mapping and `nvinfer`'s

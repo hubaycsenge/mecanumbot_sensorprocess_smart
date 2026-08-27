@@ -220,6 +220,8 @@ class DeepStreamPersonDetectNode(Node):
         self._announced_network_size = False
         self._warned_network_size = False
         self._checked_alignment = False
+        self._dumped_raw_metadata = False
+        self._frame_shape = None
 
         # --- NEW ELEMENTS FOR IMAGE EXTRACTION ---
         # Converts infer output format to RGBA so Python can read it
@@ -728,6 +730,46 @@ class DeepStreamPersonDetectNode(Node):
             pixel_kpts.append((conf, px, py))
         return pixel_kpts
 
+    def _dump_raw_metadata(self, keypoints, mask_params, rect, pixel_kpts):
+        """
+        Print every number the keypoint mapping depends on, once.
+
+        The mapping is a chain of assumptions -- what the parser writes into
+        the mask, what coordinate space it is in, what the network input was,
+        what resize nvinfer applied -- and a wrong skeleton looks the same
+        whichever link broke. Dumping the raw triplets next to the mapped ones,
+        with the box nvinfer mapped itself for comparison, settles which one it
+        is from a single frame instead of from the shape of the overlay.
+        """
+        if self._dumped_raw_metadata:
+            return
+        self._dumped_raw_metadata = True
+        raw = [
+            "({:.2f}, {:.2f}, {:.2f})".format(*(float(v) for v in keypoints[i]))
+            for i in range(min(4, len(keypoints)))
+        ]
+        mapped = [
+            "(conf {:.2f} -> {:.0f}, {:.0f})".format(c, x, y)
+            for c, x, y in pixel_kpts[:4]
+        ]
+        self.get_logger().info(
+            "Raw metadata dump (once, debug_mode only):\n"
+            f"  surface (h, w, c):   {self._frame_shape}\n"
+            f"  mask width x height: {mask_params.width}x{mask_params.height}, "
+            f"size {mask_params.size} bytes ({mask_params.size // 4} floats)\n"
+            f"  camera_params:       {self.camera_width}x{self.camera_height}\n"
+            f"  keypoint_scaling:    {self.keypoint_scaling}\n"
+            f"  box from nvinfer:    left {rect[0]:.0f} top {rect[1]:.0f} "
+            f"{rect[2]:.0f}x{rect[3]:.0f}\n"
+            f"  first raw triplets:  {', '.join(raw)}\n"
+            f"  same four mapped:    {', '.join(mapped)}\n"
+            "The raw triplets are (conf, x, y) if the first number of each is in "
+            "[0, 1]; if instead the last one is, the parser writes (x, y, conf) and "
+            "this node is reading the triplet backwards. The mapped joints have to "
+            "fall inside the box above, which nvinfer mapped with the resize it "
+            "really applied."
+        )
+
     def _check_keypoint_alignment(self, pixel_kpts, rect):
         """
         Report once when the mapped keypoints miss their own bounding box.
@@ -846,6 +888,8 @@ class DeepStreamPersonDetectNode(Node):
                     float(obj_meta.rect_params.height),
                 )
                 pixel_kpts = self._pixel_keypoints(keypoints, mask_params)
+                if self.debug_mode:
+                    self._dump_raw_metadata(keypoints, mask_params, rect, pixel_kpts)
                 self._check_keypoint_alignment(pixel_kpts, rect)
                 candidates.append(
                     {
@@ -984,6 +1028,7 @@ class DeepStreamPersonDetectNode(Node):
 
             n_frame = pyds.get_nvds_buf_surface(hash(gst_buffer), frame_meta.batch_id)
             frame_copy = np.array(n_frame, copy=True, order="C")
+            self._frame_shape = frame_copy.shape
             debug_img = cv2.cvtColor(frame_copy, cv2.COLOR_RGBA2BGR)
 
             candidates = self._collect_candidates(frame_meta)
