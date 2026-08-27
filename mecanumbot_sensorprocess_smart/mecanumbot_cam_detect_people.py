@@ -170,7 +170,7 @@ class PersonDetectNode(Node):
                 try:
                     xyn = result.keypoints.xyn.cpu().numpy()[
                         0, :, :
-                    ]  # Normalized keypoints (x, y in [0,1])
+                    ] 
                 except Exception as e:
                     self.get_logger().error(f"Failed to process keypoints: {e}")
                     continue
