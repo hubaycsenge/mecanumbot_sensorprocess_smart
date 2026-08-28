@@ -222,6 +222,10 @@ class DeepStreamPersonDetectNode(Node):
         self._checked_alignment = False
         self._dumped_raw_metadata = False
         self._frame_shape = None
+        self._warned_surface_size = False
+        # Metadata pixels -> surface pixels. Unity unless nvstreammux hands the
+        # probe a frame of a different size than it was configured for.
+        self._overlay_scale = (1.0, 1.0)
 
         # --- NEW ELEMENTS FOR IMAGE EXTRACTION ---
         # Converts infer output format to RGBA so Python can read it
@@ -730,6 +734,48 @@ class DeepStreamPersonDetectNode(Node):
             pixel_kpts.append((conf, px, py))
         return pixel_kpts
 
+    def _update_overlay_scale(self, frame_shape):
+        """
+        Keep the overlay in the surface's pixels, not the muxer's.
+
+        Every coordinate in the metadata -- `rect_params` from nvinfer and the
+        keypoints mapped here alike -- is in the frame nvinfer believes it
+        inferred on, which is the size `nvstreammux` was configured for. That
+        is not always the size of the buffer the probe receives: a source whose
+        frames are passed through rather than rescaled leaves the surface at
+        its own resolution, and the overlay then lands on a differently shaped
+        image. Drawing at the muxer's scale would shrink the whole annotation
+        towards the top-left corner, box and skeleton together, in exact
+        proportion to the height the muxer thinks it has.
+
+        Only the drawing is corrected. The published bearings and the detection
+        gate are normalised by `camera_params`, which is the same space the
+        metadata is in, so they stay self-consistent -- but the absolute
+        thresholds among them (`min_box_height`, `max_box_aspect_ratio`) are
+        measured on a frame of the wrong shape, which is why the mismatch is
+        worth a warning rather than a silent correction.
+        """
+        height, width = float(frame_shape[0]), float(frame_shape[1])
+        if width <= 0.0 or height <= 0.0:
+            return
+        self._overlay_scale = (width / self.camera_width, height / self.camera_height)
+        if self._warned_surface_size:
+            return
+        self._warned_surface_size = True
+        if (int(width), int(height)) == (self.camera_width, self.camera_height):
+            return
+        self.get_logger().warn(
+            f"The probe receives {int(width)}x{int(height)} frames, but "
+            f"camera_params say {self.camera_width}x{self.camera_height}, which is "
+            "also what nvstreammux was configured for and therefore the space every "
+            "box and keypoint arrives in. The overlay is rescaled by "
+            f"({self._overlay_scale[0]:.3f}, {self._overlay_scale[1]:.3f}) to land on "
+            "the image, but the detection gate still measures min_box_height and "
+            "max_box_aspect_ratio on a frame of the wrong shape. Set "
+            f"camera_params.camera_width/camera_height to {int(width)}/{int(height)} "
+            "so the two agree."
+        )
+
     def _dump_raw_metadata(self, keypoints, mask_params, rect, pixel_kpts):
         """
         Print every number the keypoint mapping depends on, once.
@@ -754,7 +800,8 @@ class DeepStreamPersonDetectNode(Node):
         ]
         self.get_logger().info(
             "Raw metadata dump (once, debug_mode only):\n"
-            f"  surface (h, w, c):   {self._frame_shape}\n"
+            f"  surface (h, w, c):   {self._frame_shape}, overlay rescaled by "
+            f"{self._overlay_scale[0]:.3f}, {self._overlay_scale[1]:.3f}\n"
             f"  mask width x height: {mask_params.width}x{mask_params.height}, "
             f"size {mask_params.size} bytes ({mask_params.size // 4} floats)\n"
             f"  camera_params:       {self.camera_width}x{self.camera_height}\n"
@@ -921,8 +968,17 @@ class DeepStreamPersonDetectNode(Node):
         blue, so which of the two gates let a box through is visible without
         reading the label.
         """
-        rect = candidate["rect"]
-        pixel_kpts = candidate["keypoints"]
+        scale_x, scale_y = self._overlay_scale
+        rect = [
+            candidate["rect"][0] * scale_x,
+            candidate["rect"][1] * scale_y,
+            candidate["rect"][2] * scale_x,
+            candidate["rect"][3] * scale_y,
+        ]
+        pixel_kpts = [
+            (conf, px * scale_x, py * scale_y)
+            for conf, px, py in candidate["keypoints"]
+        ]
         if not accepted:
             colour = (0, 0, 255)
         elif close_range:
@@ -1029,6 +1085,7 @@ class DeepStreamPersonDetectNode(Node):
             n_frame = pyds.get_nvds_buf_surface(hash(gst_buffer), frame_meta.batch_id)
             frame_copy = np.array(n_frame, copy=True, order="C")
             self._frame_shape = frame_copy.shape
+            self._update_overlay_scale(frame_copy.shape)
             debug_img = cv2.cvtColor(frame_copy, cv2.COLOR_RGBA2BGR)
 
             candidates = self._collect_candidates(frame_meta)

@@ -434,6 +434,25 @@ in `[0, 1]`, and `(x, y, conf)` if the last one is. Upstream `DeepStream-Yolo-Po
 writes `(x, y, conf)`; this node reads `(conf, x, y)`, so a checkout that follows
 upstream needs the triplet reversed here.
 
+### Metadata space vs. surface size
+
+Everything in the metadata — `rect_params` from `nvinfer` and the keypoints mapped here
+alike — is in the frame `nvinfer` believes it inferred on, which is the size
+`nvstreammux` was configured for, i.e. `camera_params`. The buffer the probe receives is
+not always that size: a source whose frames are passed through rather than rescaled
+leaves the surface at its own resolution. Drawing the annotation at the muxer's scale
+then shrinks it towards the top-left corner — box and skeleton together, in exact
+proportion to the height the muxer thinks it has. A 4:3 source treated as 1280x720 puts
+every joint at `0.75*y`, so the knees land on the thighs and the feet on the shins,
+while x is untouched because the widths agree.
+
+The node rescales the overlay onto the surface it is drawn on and says so once. It does
+**not** rescale the detections: the bearings and the gate are normalised by
+`camera_params`, the same space the metadata is in, so they stay self-consistent. What
+does not survive the mismatch are the gate's absolute thresholds — `min_box_height` and
+`max_box_aspect_ratio` are then measured on a frame of the wrong shape — so the right
+fix is to set `camera_params` to the size the warning reports.
+
 Whichever mapping is in force, the node checks it once against the bounding box:
 `rect_params` reaches the probe already in frame pixels, mapped by `nvinfer` itself, so
 a skeleton that lands outside its own box means the node's mapping and `nvinfer`'s
