@@ -7,6 +7,7 @@ from std_msgs.msg import Float32 as Float
 from std_msgs.msg import Header, String
 from geometry_msgs.msg import Pose, PoseArray, Point
 import os
+import tempfile
 import gi
 
 gi.require_version("Gst", "1.0")
@@ -99,6 +100,13 @@ class DeepStreamPersonDetectNode(Node):
                 ("camera_params.camera_width", 1280),
                 ("camera_params.camera_height", 720),
                 ("camera_params.camera_fov", math.radians(60.0)),
+                # ---- pose model (see _render_nvinfer_config) ----
+                ("model_params.imgsz", 1280),
+                ("model_params.model_name", "yolo26m-pose"),
+                ("model_params.precision", "fp16"),
+                ("model_params.models_dir", ""),
+                ("model_params.custom_lib_path", ""),
+                ("model_params.nvinfer_config", ""),
                 ("from_topic", False),
                 ("camera_topic", "camera/image_raw/compressed"),
                 ("webcam_device", "/dev/video0"),
@@ -209,10 +217,7 @@ class DeepStreamPersonDetectNode(Node):
         self.mux.set_property("batched-push-timeout", 40000)
 
         self.nvinfer = Gst.ElementFactory.make("nvinfer", "primary-inference")
-        path = get_package_share_directory("mecanumbot_sensorprocess_smart")
-        nvinfer_config = os.path.join(
-            path, "deepstream_config", "config_infer_yolo26_pose.txt"
-        )
+        nvinfer_config = self._render_nvinfer_config()
         self.nvinfer.set_property("config-file-path", nvinfer_config)
         self._resolve_keypoint_scaling(nvinfer_config)
         self.network_input_size = self._read_infer_dims(nvinfer_config)
@@ -433,6 +438,130 @@ class DeepStreamPersonDetectNode(Node):
                 "torso in frame and will not be acquired."
             )
         return config
+
+    def _model_path(self):
+        """
+        Return (onnx, engine) for the configured model size, or (None, None).
+
+        Every ONNX export is fixed to one input size, so the exports are stored
+        one folder per size -- `models/imgsz_<n>/` -- and `model_params.imgsz`
+        picks the folder. The engine sits beside its own ONNX under the name
+        nvinfer derives from the config (`<onnx>_b<batch>_gpu<gpu>_<precision>`),
+        so an engine built for one size can never be loaded for another: that
+        used to be silent, because the engine filename does not encode the
+        input size.
+        """
+        models_dir = str(self.get_parameter("model_params.models_dir").value or "")
+        if not models_dir:
+            models_dir = os.path.join(
+                get_package_share_directory("mecanumbot_sensorprocess_smart"), "models"
+            )
+        imgsz = int(self.get_parameter("model_params.imgsz").value)
+        model_name = str(self.get_parameter("model_params.model_name").value)
+        precision = str(self.get_parameter("model_params.precision").value)
+
+        onnx = os.path.join(
+            models_dir, "imgsz_{}".format(imgsz), "{}.onnx".format(model_name)
+        )
+        engine = "{}_b1_gpu0_{}.engine".format(onnx, precision)
+        if not os.path.isfile(onnx):
+            self.get_logger().error(
+                f"No ONNX at {onnx}. model_params.imgsz={imgsz} selects "
+                f"models/imgsz_{imgsz}/, so either export the model at that size "
+                "(models/conv_to_onnx.py) or set imgsz to a size that is present."
+            )
+            return None, None
+        return onnx, engine
+
+    def _render_nvinfer_config(self):
+        """
+        Write the nvinfer config for the selected model and return its path.
+
+        The packaged config is a template: the model, its engine and the input
+        size it was exported at are rewritten here from `model_params`, so the
+        input size is a launch argument rather than three lines that have to be
+        edited in step by hand. Nothing else in the file is touched, and the
+        rendered copy is left on disk for inspection.
+
+        `model_params.nvinfer_config` bypasses all of this and hands nvinfer the
+        named file untouched.
+        """
+        share = get_package_share_directory("mecanumbot_sensorprocess_smart")
+        template = os.path.join(share, "deepstream_config", "config_infer_yolo26_pose.txt")
+
+        override = str(self.get_parameter("model_params.nvinfer_config").value or "")
+        if override:
+            self.get_logger().info(f"nvinfer config: {override} (used as-is).")
+            return override
+
+        onnx, engine = self._model_path()
+        if onnx is None:
+            self.get_logger().warn(
+                f"Falling back to the packaged {template} unchanged; whatever model "
+                "it names is the one that will run."
+            )
+            return template
+
+        imgsz = int(self.get_parameter("model_params.imgsz").value)
+        custom_lib = str(self.get_parameter("model_params.custom_lib_path").value or "")
+        # Relative paths in an nvinfer config resolve against the config's own
+        # directory, so they have to be absolutized before the copy moves.
+        labels = os.path.join(share, "deepstream_config", "labels.txt")
+        substitutions = {
+            "onnx-file": onnx,
+            "model-engine-file": engine,
+            "infer-dims": "3;{};{}".format(imgsz, imgsz),
+            "labelfile-path": labels,
+        }
+        if custom_lib:
+            substitutions["custom-lib-path"] = custom_lib
+
+        try:
+            with open(template, "r") as handle:
+                lines = handle.readlines()
+        except OSError as exc:
+            self.get_logger().error(f"Could not read {template}: {exc}")
+            return template
+
+        rendered_lines = []
+        for line in lines:
+            key = line.split("=", 1)[0].strip() if "=" in line else ""
+            if key in substitutions:
+                rendered_lines.append("{}={}\n".format(key, substitutions.pop(key)))
+            else:
+                rendered_lines.append(line)
+        # Keys the template does not carry at all still have to reach nvinfer.
+        if substitutions:
+            rendered_lines.append("# added by mecanumbot_onboard_cam_detect_people\n")
+            rendered_lines.extend(
+                "{}={}\n".format(key, value) for key, value in substitutions.items()
+            )
+
+        rendered = os.path.join(
+            tempfile.gettempdir(),
+            "mecanumbot_nvinfer_{}_imgsz{}.txt".format(
+                str(self.get_parameter("model_params.model_name").value), imgsz
+            ),
+        )
+        try:
+            with open(rendered, "w") as handle:
+                handle.writelines(rendered_lines)
+        except OSError as exc:
+            self.get_logger().error(
+                f"Could not write {rendered}: {exc}; using {template} unchanged."
+            )
+            return template
+
+        self.get_logger().info(
+            f"nvinfer config: {rendered} (rendered from {template}) -> "
+            f"{os.path.basename(onnx)} at {imgsz}x{imgsz}."
+        )
+        if not os.path.isfile(engine):
+            self.get_logger().info(
+                f"No engine at {engine} yet; nvinfer will build one on startup "
+                "(minutes). models/build_engine.py builds it ahead of time."
+            )
+        return rendered
 
     def _resolve_keypoint_scaling(self, nvinfer_config):
         """Pick the inverse of the pre-processing letterbox/stretch nvinfer applies.

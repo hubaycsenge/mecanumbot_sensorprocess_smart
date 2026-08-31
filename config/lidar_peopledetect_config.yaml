@@ -46,6 +46,28 @@ mecanumbot_cam_detect_people_ds:
       iou_threshold: 0.3
       # Empty means "reuse the frame the native detections use" (<ns>/head_link).
       frame_id: ''
+    # ---- pose model ----
+    # The ONNX exports are stored one folder per input size, models/imgsz_<n>/.
+    # imgsz picks the folder and model_name the file in it; the node rewrites
+    # onnx-file, model-engine-file and infer-dims in a copy of
+    # deepstream_config/config_infer_yolo26_pose.txt to match, so the three
+    # never drift apart. Both are set from the base launch (yolo_imgsz,
+    # yolo_model), which overrides whatever is written here.
+    model_params:
+      # fp16 | fp32 -- must match network-mode in the nvinfer config
+      # (fp16 -> 2, fp32 -> 0), since the precision is part of the engine name.
+      precision: fp16
+      # Empty means the package share models/ folder. Point it at the source
+      # tree on the robot if nvinfer should build its engines where they
+      # survive a rebuild.
+      models_dir: ''
+      # Where DeepStream-Yolo-Pose was built. Empty keeps the custom-lib-path
+      # written in the nvinfer config.
+      custom_lib_path: ''
+      # A complete nvinfer config to hand to nvinfer untouched; setting it
+      # disables all of the substitution above.
+      nvinfer_config: ''
+
     # How to invert the nvinfer input resize when mapping keypoints back to
     # pixels: letterbox | stretch | auto (auto reads maintain-aspect-ratio from
     # deepstream_config/config_infer_yolo26_pose.txt). Keep this on auto: the

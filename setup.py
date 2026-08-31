@@ -19,6 +19,14 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/config", share_files("config/*")),
         ("share/" + package_name + "/models", share_files("models/*")),
+        # One folder per exported input size; mecanumbot_onboard_cam_detect_people
+        # picks between them with model_params.imgsz.
+        *[
+            ("share/" + package_name + "/models/" + os.path.basename(directory),
+             share_files(os.path.join(directory, "*")))
+            for directory in sorted(glob("models/imgsz_*"))
+            if os.path.isdir(directory)
+        ],
         ("share/" + package_name + "/launch", share_files("launch/*")),
         (
             "share/" + package_name + "/deepstream_config",

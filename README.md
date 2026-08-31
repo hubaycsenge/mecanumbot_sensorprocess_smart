@@ -219,6 +219,12 @@ ROS node name: `mecanumbot_cam_detect_people_ds`.
 | `webcam_device`               | `/dev/video0`                 | V4L2 device used in webcam mode.                                                      |
 | `debug_mode`                  | `false`                       | Enables the annotated debug image publisher.                                          |
 | `keypoint_scaling`            | `auto`                        | How to invert the `nvinfer` input resize: `letterbox`, `stretch`, or `auto`.           |
+| `model_params.imgsz`          | `1280`                        | Input size the pose model expects; selects `models/imgsz_<n>/`.                       |
+| `model_params.model_name`     | `yolo26m-pose`                | Model stem inside that folder.                                                        |
+| `model_params.precision`      | `fp16`                        | Engine precision; part of the engine filename, must match `network-mode`.             |
+| `model_params.models_dir`     | `''`                          | Where the `imgsz_<n>` folders live; empty means the package share `models/`.           |
+| `model_params.custom_lib_path`| `''`                          | Overrides `custom-lib-path`; empty keeps the one in the nvinfer config.               |
+| `model_params.nvinfer_config` | `''`                          | A complete nvinfer config to use untouched, disabling the substitution below.          |
 | `ros4hri.enabled`             | `true`                        | Publishes the `/humans/bodies` tree in addition to the native messages.               |
 | `ros4hri.prefix`              | `/humans`                     | Root of the ROS4HRI topic tree. Absolute, so the node namespace does not shift it.    |
 | `ros4hri.publish_rate`        | `30.0`                        | Hz at which queued bodies are published and per-body publishers reconciled.           |
@@ -465,8 +471,9 @@ off joints that are in the wrong place, and the fusion in
 
 - Announces its input geometry at startup: the requested frame size and source, the
   `nvstreammux` size and the horizontal FOV, plus the network input size — read from
-  `infer-dims` if the nvinfer config sets it, otherwise reported from the first inferred
-  frame, since without `infer-dims` nvinfer takes the shape from the model itself. The
+  `infer-dims` if the nvinfer config sets it (the rendered config always does, from
+  `model_params.imgsz`), otherwise reported from the first inferred frame, since without
+  `infer-dims` nvinfer takes the shape from the model itself. The
   size the source *actually* delivered is logged from the first frame as well, and a
   mismatch against `camera_params` is a warning when the aspect ratios differ: every
   bearing is derived from a keypoint's x within `camera_width`, so a frame that
@@ -482,14 +489,47 @@ off joints that are in the wrong place, and the fusion in
 
 ### DeepStream configuration
 
-`deepstream_config/config_infer_yolo26_pose.txt` points `nvinfer` at
-`models/yolo26m-pose.onnx` and its FP16 engine, and at the `DeepStream-Yolo-Pose`
-custom parser library. These are **absolute paths under `/home/ubuntu/`** — they have
-to be edited to match the deployment machine before this node will start.
+An ONNX export is fixed to the `imgsz` it was exported at, so the exports are stored
+**one folder per size** — `models/imgsz_640/`, `models/imgsz_1280/` — with the
+size-independent `.pt` checkpoints left at the top of `models/`. `model_params.imgsz`
+picks the folder and `model_params.model_name` the file in it; the base launch exposes
+both as the `yolo_imgsz` and `yolo_model` arguments:
 
-`models/conv_to_onnx.py` exports the ONNX and fixes the `imgsz` (currently 1280);
-`infer-dims` in the nvinfer config has to be kept in step with it, and the existing
-`.engine` deleted, or `nvinfer` silently keeps running the previous size.
+```bash
+ros2 launch mecanumbot_bringup launch_mecanumbot_base.launch.py yolo_imgsz:=640
+```
+
+`deepstream_config/config_infer_yolo26_pose.txt` is the **template** for that choice,
+not the file `nvinfer` is given. At startup the node renders a copy of it into
+`/tmp/mecanumbot_nvinfer_<model>_imgsz<n>.txt` with four lines rewritten — `onnx-file`,
+`model-engine-file`, `infer-dims` and `labelfile-path` (absolutized, since relative
+paths in an nvinfer config resolve against the config's own directory) — and points
+`nvinfer` at the copy. The rendered file is logged and left on disk to be read. The
+values in the template itself only apply when the file is fed to `nvinfer` directly
+(`deepstream-app`, `gst-launch`) or via `model_params.nvinfer_config`.
+
+That is what keeps `infer-dims` and the model in step: they are no longer two lines that
+have to be edited together. The engine follows too, since it is named after its own ONNX
+(`<onnx>_b1_gpu0_fp16.engine`) inside the size folder, so a 640 engine can no longer be
+loaded for a 1280 export — the engine filename does not encode the input size, and that
+mismatch used to be silent. Re-exporting at the *same* size still requires deleting the
+engine by hand; `models/conv_to_onnx.py` names any it finds.
+
+`custom-lib-path` is still a machine-specific absolute path under `/home/ubuntu/`
+(where `DeepStream-Yolo-Pose` was built). Either edit it in the template or set
+`model_params.custom_lib_path`.
+
+```bash
+# export at a size and build its engine (on the Jetson; engines do not transfer)
+python3 models/conv_to_onnx.py yolo26m-pose --imgsz 640
+python3 models/build_engine.py models/imgsz_640/yolo26m-pose.onnx
+```
+
+Engines are gitignored build artifacts. `nvinfer` builds a missing one on the first
+launch, but it writes it next to the ONNX it loaded — under `install/` in a
+`--symlink-install` workspace, where the next `colcon build` may not preserve it. Point
+`model_params.models_dir` at the source tree, or build engines ahead of time with
+`build_engine.py`, to keep them.
 
 ## Node: mecanumbot_locate_detections
 
@@ -578,9 +618,11 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 | config/lidar_peopledetect_config.yaml                                  | Runtime ROS parameters for node topics and thresholds.               |
 | models/dr_spaam_5_on_frog.pth                                          | DR-SPAAM pretrained weights used by the LiDAR detector.              |
 | models/dr_spaam.onnx                                                   | ONNX export of the DR-SPAAM model.                                   |
-| models/yolo26n-pose.pt                                                 | YOLO pose weights used by the Ultralytics camera detector.           |
-| models/yolo26n-pose.onnx, models/yolo26n-pose.onnx_b1_gpu0_fp16.engine | ONNX and TensorRT FP16 build used by the DeepStream detector.        |
-| deepstream_config/config_infer_yolo26_pose.txt                         | `nvinfer` configuration for the DeepStream pose model.               |
+| models/yolo26{n,s,m}-pose.pt                                           | YOLO pose checkpoints; size-independent, used by the Ultralytics camera detector. |
+| models/imgsz_640/, models/imgsz_1280/                                  | ONNX exports and their TensorRT engines, one folder per input size; `model_params.imgsz` selects one. |
+| models/conv_to_onnx.py                                                 | Exports a checkpoint to ONNX at a given `imgsz`, into that size's folder. |
+| models/build_engine.py                                                 | Builds the TensorRT engine for an ONNX under the name `nvinfer` looks for. |
+| deepstream_config/config_infer_yolo26_pose.txt                         | Template `nvinfer` configuration; the node renders a copy per model and size. |
 | deepstream_config/labels.txt                                           | Class label file referenced by the `nvinfer` config.                 |
 
 The YAML file carries the LiDAR node's parameters plus the ROS4HRI block for the
