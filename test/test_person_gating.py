@@ -258,6 +258,85 @@ class TestCloseRange:
         assert confirmer.track_count == 1
 
 
+class TestLooseClothing:
+    """The long-skirt case: a close body whose box does not reach the top edge.
+
+    Every box here is measured off a debug frame the detector rejected. The
+    network draws the box round the body it recognised, and a wide skirt is not
+    recognised as body, so the top edge lands well inside the frame even though
+    the legs below it fill the picture. The old absolute 8 px tolerance could
+    not be met, the detection was judged by the full-body gate, and it was
+    thrown out for a torso that was never in shot -- which is the same shape of
+    error a chair under a long tablecloth would produce.
+    """
+
+    # box_top, box_height, box_conf, the joints found and their confidence.
+    # 0.90 of a 720 frame, starting 48 px down.
+    SKIRT_BOX = (140.0, 48.0, 770.0, 693.0)
+
+    def test_box_that_misses_the_top_edge_is_still_close_range(self):
+        ev = evidence_for(legs_keypoints(), 0.84, self.SKIRT_BOX, IMAGE_HEIGHT)
+        assert ev.box_top > CONFIG.proximity_top_margin
+        assert is_close_range(ev, CONFIG)
+
+    def test_three_leg_joints_and_a_good_box_are_acquired(self):
+        # Screenshot: box 0.84, knee and both ankles at ~0.99, rejected as
+        # "keypoints 3<6" -- the full-body count, on a body with no torso in
+        # frame.
+        legs = legs_keypoints(conf=0.99, joints=(LEFT_KNEE, LEFT_ANKLE, RIGHT_ANKLE))
+        passed, reason = check_evidence(
+            evidence_for(legs, 0.84, self.SKIRT_BOX, IMAGE_HEIGHT),
+            CONFIG,
+            strict=True,
+        )
+        assert passed, reason
+        assert reason == "near-ok"
+
+    def test_bare_legs_at_low_box_confidence_are_acquired(self):
+        # Screenshot: box 0.44 with a knee at 0.55 and an ankle at 0.33. The
+        # close-range branch did fire; the acquire thresholds were the ones
+        # written for a whole body, so it was rejected at "0.44<=0.50".
+        kpts = keypoints([0.05] * NUM_KEYPOINTS)
+        kpts[LEFT_KNEE] = (0.55, 500.0, 300.0)
+        kpts[LEFT_ANKLE] = (0.33, 500.0, 640.0)
+        passed, reason = check_evidence(
+            near_evidence(kpts, box_conf=0.44), CONFIG, strict=True
+        )
+        assert passed, reason
+
+    def test_a_box_filling_the_frame_is_close_wherever_its_top_sits(self):
+        # Past the fractional margin as well: only the dominant-height branch
+        # can carry this one.
+        deep = (140.0, 150.0, 770.0, 715.0)  # 0.785 of the frame, top 150 px
+        ev = evidence_for(legs_keypoints(), 0.8, deep, IMAGE_HEIGHT)
+        assert not is_close_range(ev, CONFIG)
+        tall = (140.0, 80.0, 770.0, 715.0)  # 0.88 of the frame, top 80 px
+        assert is_close_range(
+            evidence_for(legs_keypoints(), 0.8, tall, IMAGE_HEIGHT), CONFIG
+        )
+
+    def test_the_relaxation_still_keeps_a_tablecloth_out(self):
+        # The point of the whole exercise: a frame-filling object whose top
+        # edge is inside the frame now reaches the close-range gate, so that
+        # gate is the only thing between a draped chair and a person. It holds,
+        # because the network places no leg on a tablecloth.
+        passed, reason = check_evidence(
+            evidence_for(prop_keypoints(), 0.95, self.SKIRT_BOX, IMAGE_HEIGHT),
+            CONFIG,
+            strict=True,
+        )
+        assert not passed
+        assert reason.startswith("near-")
+
+    def test_one_convincing_joint_is_not_enough_on_its_own(self):
+        # A single leg joint clears the confidence bar but not the count: two
+        # of the six hip/knee/ankle joints are required to acquire.
+        one = legs_keypoints(conf=0.99, joints=(LEFT_KNEE,))
+        assert not check_evidence(
+            evidence_for(one, 0.84, self.SKIRT_BOX, IMAGE_HEIGHT), CONFIG, strict=True
+        )[0]
+
+
 class TestIou:
     def test_disjoint_boxes(self):
         assert iou((0, 0, 10, 10), (20, 20, 30, 30)) == 0.0

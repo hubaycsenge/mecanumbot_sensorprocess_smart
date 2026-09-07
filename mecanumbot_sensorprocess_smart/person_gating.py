@@ -34,12 +34,12 @@ detection was - and close range is exactly where a person matters most.
 
 Close range is recognised geometrically rather than assumed: the box has to run
 off the *top* of the frame (the body continues above the field of view) and
-fill most of the frame's height. A detection that does gets the torso
-requirement replaced by a **lower-body** one - hips, knees and ankles - and
-looser keypoint counts. The compensating guard is that the geometry and the
-keypoints have to agree: a wall panel or a bean bag pushed up against the
-camera also fills the frame, but it still has no leg to place, and
-``best_keypoint_conf_*`` is unchanged in this branch.
+fill most of the frame's height, or else fill so much of it that nothing at a
+distance could. A detection that does gets the torso requirement replaced by a
+**lower-body** one - hips, knees and ankles - and looser keypoint counts and
+confidences. The compensating guard is that the geometry and the keypoints have
+to agree: a wall panel or a bean bag pushed up against the camera also fills the
+frame, but it still has no leg to place.
 
 Everything here is pure Python: no ROS, no DeepStream, no NumPy. That is
 deliberate - it keeps the part of the detector that encodes the actual
@@ -131,10 +131,31 @@ class GateConfig:
     proximity_enabled: bool = True
     proximity_min_height_fraction: float = 0.6
     proximity_top_margin: float = 8.0
+    # The same tolerance as a fraction of the image height; the two are
+    # combined with `max`, so `proximity_top_margin` is a floor for small
+    # frames and this is what governs at 720p and above. An absolute 8 px was
+    # too strict to be met in practice: the network puts the top of the box at
+    # the top of the *body it found*, and on loose clothing -- a long skirt,
+    # a coat -- that lands tens of pixels below the edge of the image, which
+    # threw a frame-filling body back onto the full-body gate and had it
+    # rejected for the torso it cannot show.
+    proximity_top_fraction: float = 0.08
+    # ... and the escape hatch for when even that is not met: a box this tall
+    # is a close body wherever its top sits, because nothing at a distance
+    # fills the frame. It is bounded above by the aspect-ratio and lower-body
+    # checks, which a prop still has to pass.
+    proximity_dominant_height_fraction: float = 0.85
     # A cropped body is a partial body, and the network scores it lower than a
     # whole one, so the box gates are relaxed here too.
-    proximity_box_conf_acquire: float = 0.5
+    proximity_box_conf_acquire: float = 0.4
     proximity_box_conf_retain: float = 0.3
+    # Legs are scored lower than faces: the joints left in frame close up are
+    # knees and ankles, which the network is less sure of than a nose or a
+    # shoulder, so the whole-body `best_keypoint_conf_*` is unmeetable here
+    # too. Kept well above `keypoint_conf` -- one joint still has to be placed
+    # convincingly, which is what a prop cannot do.
+    proximity_best_keypoint_conf_acquire: float = 0.5
+    proximity_best_keypoint_conf_retain: float = 0.35
     proximity_min_valid_keypoints_acquire: int = 2
     proximity_min_valid_keypoints_retain: int = 1
     # Of the six hip/knee/ankle joints. This is the check that keeps the
@@ -247,10 +268,35 @@ def is_close_range(evidence, cfg):
     self-justifying. A body whose box starts at the top edge of the image and
     fills most of its height continues above the field of view, which for a
     camera at shin height means the person is standing close.
+
+    "Starts at the top edge" is the part that has to be forgiving. The box is
+    drawn around the body the network found, not around the person, so a
+    detection that is unmistakably close -- legs filling the frame -- can still
+    have its top edge well inside the image when the clothing above the knees
+    is not recognised as body: a long skirt is the case this was written for,
+    and a tablecloth or a coat behaves the same way. Two tolerances therefore
+    apply, and either one is enough:
+
+    * the top of the box is within ``proximity_top_margin`` px or
+      ``proximity_top_fraction`` of the image height of the top edge,
+      whichever is larger, **and** the box fills
+      ``proximity_min_height_fraction`` of the frame; or
+    * the box fills ``proximity_dominant_height_fraction`` of the frame,
+      wherever its top happens to sit.
+
+    Neither branch weakens the guard: what makes the relaxed gate honest is the
+    lower-body keypoint requirement in :func:`check_evidence`, and a prop that
+    fills the frame still has no leg to place.
     """
     if not cfg.proximity_enabled or evidence.image_height <= 0.0:
         return False
-    if evidence.box_top > cfg.proximity_top_margin:
+    if evidence.height_fraction >= cfg.proximity_dominant_height_fraction:
+        return True
+    top_margin = max(
+        cfg.proximity_top_margin,
+        cfg.proximity_top_fraction * evidence.image_height,
+    )
+    if evidence.box_top > top_margin:
         return False
     return evidence.height_fraction >= cfg.proximity_min_height_fraction
 
@@ -278,12 +324,12 @@ def check_evidence(evidence, cfg, strict):
             box_conf = cfg.proximity_box_conf_acquire
             min_valid = cfg.proximity_min_valid_keypoints_acquire
             min_body = cfg.proximity_min_lower_body_acquire
-            best_conf = cfg.best_keypoint_conf_acquire
+            best_conf = cfg.proximity_best_keypoint_conf_acquire
         else:
             box_conf = cfg.proximity_box_conf_retain
             min_valid = cfg.proximity_min_valid_keypoints_retain
             min_body = cfg.proximity_min_lower_body_retain
-            best_conf = cfg.best_keypoint_conf_retain
+            best_conf = cfg.proximity_best_keypoint_conf_retain
     else:
         max_aspect = cfg.max_box_aspect_ratio
         if strict:

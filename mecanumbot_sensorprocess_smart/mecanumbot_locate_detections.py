@@ -20,8 +20,15 @@ from tf2_ros import TransformListener, Buffer
 from transforms3d.euler import euler2quat, quat2euler
 from rclpy.duration import Duration
 import math
+import threading
 import numpy as np
 import copy
+
+from mecanumbot_sensorprocess_smart.person_tracking import (
+    PersonTracker,
+    TrackerConfig,
+    combine_measurements,
+)
 
 
 class PersonLocateNode(Node):
@@ -38,6 +45,26 @@ class PersonLocateNode(Node):
         # Declare parameter for the "X" meter offset behind the obstacle
         self.declare_parameter("obstacle_buffer_x", 0.5)
         self.declare_parameter("debug_mode", False)
+        # A camera detection older than this is not evidence about now. Without
+        # the check the last CamPersonDetectionArray was kept for ever and its
+        # bearings were re-used against fresh LiDAR scans, so a person who had
+        # left was still being placed wherever the scan happened to hit inside
+        # a bearing wedge measured minutes earlier.
+        self.declare_parameter("cam_detection_timeout", 0.6)
+        # --- map-frame tracking (see person_tracking.py) ---
+        # The camera gate rejects real people -- a long skirt gives the pose
+        # network no skeleton to find -- and every rejection used to empty
+        # `people_fusion`, which the behaviour layer reads as the person being
+        # gone. The tracker carries the estimate across those gaps instead.
+        self.declare_parameter("tracking.enabled", True)
+        self.declare_parameter("tracking.publish_rate", 10.0)
+        self.declare_parameter("tracking.max_association_distance", 0.9)
+        self.declare_parameter("tracking.min_hits", 2)
+        self.declare_parameter("tracking.max_coast_time", 1.2)
+        self.declare_parameter("tracking.max_uncorroborated_time", 4.0)
+        self.declare_parameter("tracking.measurement_noise", 0.25)
+        self.declare_parameter("tracking.process_noise", 0.08)
+        self.declare_parameter("tracking.max_reported_speed", 2.5)
 
         # Publishers
         self.people_pub = self.create_publisher(PoseArray, "people_fusion", 10)
@@ -76,6 +103,30 @@ class PersonLocateNode(Node):
         self.map_array = None
         self.amcl_pose = None
         self.last_published_time = None
+        self.cam_stamp = None
+        self.cam_received_time = None
+        self.fused_poses = PoseArray()
+        # merge_detections() runs on the LiDAR callback and publish_tracks() on
+        # a timer; under the multi-threaded executor those are different
+        # threads, so the handover between them is the one place that locks.
+        self._measurement_lock = threading.Lock()
+        self._pending_measurements = None
+
+        self.tracking_enabled = bool(self.get_parameter("tracking.enabled").value)
+        self.cam_detection_timeout = float(
+            self.get_parameter("cam_detection_timeout").value
+        )
+        self.tracker = PersonTracker(self._build_tracker_config())
+        if self.tracking_enabled:
+            # `people_fusion` is published on this timer rather than on arrival
+            # of a detection, so it keeps flowing -- with a fresh stamp and a
+            # coasted position -- through a run of camera rejections. Publishing
+            # only on arrival is what made a dropped frame indistinguishable
+            # from an empty room.
+            rate = float(self.get_parameter("tracking.publish_rate").value)
+            self.publish_timer = self.create_timer(
+                1.0 / max(rate, 1.0), self.publish_tracks
+            )
 
         if self.debug_mode:
             self.people_left_FOV = PoseArray()
@@ -102,6 +153,22 @@ class PersonLocateNode(Node):
     def cam_people_callback(self, msg):
         self.cam_stamp = msg.header.stamp
         self.cam_detections = msg.people
+        self.cam_received_time = self.get_clock().now()
+
+    def _camera_is_fresh(self):
+        """Say whether the last camera detections are recent enough to use.
+
+        They are kept between messages on purpose - the camera runs slower than
+        the LiDAR and a bearing from the previous frame is still the best guess
+        for this one - but only for `cam_detection_timeout`. Past that the
+        person may simply have left, and re-using the bearing would keep
+        placing them wherever the scan happens to hit inside a wedge that no
+        longer means anything.
+        """
+        if not self.cam_detections or self.cam_received_time is None:
+            return False
+        age = (self.get_clock().now() - self.cam_received_time).nanoseconds / 1e9
+        return age <= self.cam_detection_timeout
 
     def scan_callback(self, msg):
         self.scan_data = msg
@@ -231,12 +298,22 @@ class PersonLocateNode(Node):
         ang_min = min(person.bound_angle_min.data, person.bound_angle_max.data)
         ang_max = max(person.bound_angle_min.data, person.bound_angle_max.data)
 
-        pose_candidates = []
+        # Of the LiDAR people inside the camera's bearing wedge, the one the
+        # camera is actually looking at is the one nearest the middle of it.
+        # Taking the first in list order made the fused position jump between
+        # two people standing side by side from one frame to the next, which
+        # the tracker downstream would then have to smooth away.
+        centre = (ang_min + ang_max) / 2.0
+        best_pose = None
+        best_offset = None
         for laser_pose, angle in zip(self.laser_detections, self.laser_angles):
             if ang_min <= angle <= ang_max:
-                pose_candidates.append(laser_pose)
+                offset = abs(angle - centre)
+                if best_offset is None or offset < best_offset:
+                    best_offset = offset
+                    best_pose = laser_pose
 
-        return pose_candidates[0] if pose_candidates else None
+        return best_pose
 
     def extrap_from_raw_scan(self, person):
         if self.scan_data is None:
@@ -368,70 +445,153 @@ class PersonLocateNode(Node):
         # self.get_logger().info("No wall occlusion detected, keeping original pose.")
         return local_pose
 
+    def _build_tracker_config(self):
+        """Assemble the map-frame tracker settings from the ROS parameters."""
+
+        def track(name):
+            return self.get_parameter(f"tracking.{name}").value
+
+        return TrackerConfig(
+            max_association_distance=float(track("max_association_distance")),
+            min_hits=int(track("min_hits")),
+            max_coast_time=float(track("max_coast_time")),
+            max_uncorroborated_time=float(track("max_uncorroborated_time")),
+            measurement_noise=float(track("measurement_noise")),
+            process_noise=float(track("process_noise")),
+            max_reported_speed=float(track("max_reported_speed")),
+        )
+
+    def _map_transform(self):
+        """Return the latest ``map <- base_link`` transform, or None."""
+        try:
+            return self.tf_buffer.lookup_transform(
+                "map", "mecanumbot/base_link", rclpy.time.Time()
+            )
+        except Exception as error:
+            self.get_logger().warn(
+                f"map transform unavailable: {error}", throttle_duration_sec=2.0
+            )
+            return None
+
+    def _locate_camera_person(self, person):
+        """Place one camera detection in the base_link frame, or return None.
+
+        The camera gives a bearing and no range, so the range is looked up in
+        whatever the LiDAR has inside that bearing: a DR-SPAAM person first,
+        the raw scan second.
+        """
+        person_pose = self.arrange_with_scan_dets(person)
+        if person_pose is None:
+            person_pose = self.extrap_from_raw_scan(person)
+        if person_pose is None:
+            return None
+        return self.handle_map_occlusion(person_pose)
+
     def merge_detections(self):
-        if not self.cam_detections:
+        """Turn this round's detections into map-frame measurements.
+
+        Called from the LiDAR callback, which is the faster of the two inputs.
+        Nothing is published here: with tracking on, the measurements are left
+        for :meth:`publish_tracks` to fold in on its timer, so `people_fusion`
+        runs at a steady rate whether or not a detection arrived. Publishing
+        on arrival is what used to make a rejected camera frame look exactly
+        like an empty room.
+        """
+        transform = self._map_transform()
+        if transform is None:
             return
-        # self.get_logger().info(f"Fusing {len(self.cam_detections)} camera detections with {len(self.laser_detections)} LiDAR detections.")
-        self.fused_poses = PoseArray()
-        self.fused_poses.header.stamp = self.cam_stamp
-        self.fused_poses.header.frame_id = "map"
-        if self.cam_stamp != self.last_published_time:
+        self.trans = transform
+
+        camera_points = []
+        if self._camera_is_fresh():
             for person in self.cam_detections:
-                # 1. Try to match with existing LiDAR detections
-                person_pose = self.arrange_with_scan_dets(person)
-
-                # 2. Fallback: Extrapolate from raw scan
-                if person_pose is None:
-                    person_pose = self.extrap_from_raw_scan(person)
-
-                # 3. Validation: Verify pose isn't on a mapped wall
+                person_pose = self._locate_camera_person(person)
                 if person_pose is not None:
-                    person_pose = self.handle_map_occlusion(person_pose)
-                    pose_stamped = PoseStamped()
-                    pose_stamped.header.frame_id = "mecanumbot/base_link"
-                    pose_stamped.header.stamp = (
-                        self.cam_stamp
-                    )  # or self.get_clock().now().to_msg()
-                    pose_stamped.pose = person_pose
-                    if not self.tf_buffer.can_transform(
-                        "map",
-                        "mecanumbot/base_link",
-                        self.cam_stamp,
-                        timeout=Duration(seconds=0.2),
-                    ):
-                        self.get_logger().warn("Transform unavailable")
-                    else:
-                        self.trans = self.tf_buffer.lookup_transform(
-                            "map", "mecanumbot/base_link", rclpy.time.Time()
-                        )
-                    if self.trans is not None:
-                        self.fused_poses.poses.append(
-                            do_transform_pose(pose_stamped.pose, self.trans)
-                        )
+                    mapped = do_transform_pose(person_pose, transform)
+                    camera_points.append((mapped.position.x, mapped.position.y))
                 if self.debug_mode:
                     self.fill_bound_angle(
                         person.bound_angle_min.data, person.bound_angle_max.data
                     )
-            # Publish combined array
-            if self.fused_poses.poses:
-                # self.get_logger().info(f"Publishing {len(self.fused_poses.poses)} fused detections.")
-                self.people_pub.publish(self.fused_poses)
-            if self.debug_mode:
-                if self.people_left_FOV.poses:
-                    # self.get_logger().info(f"Publishing {len(self.people_left_FOV.poses)} left FOV detections.")
-                    self.people_left_FOV.header.stamp = self.cam_stamp
-                    self.people_left_FOV_pub.publish(self.people_left_FOV)
-                    self.people_left_FOV.poses.clear()
-                if self.people_right_FOV.poses:
-                    # self.get_logger().info(f"Publishing {len(self.people_right_FOV.poses)} right FOV detections.")
-                    self.people_right_FOV.header.stamp = self.cam_stamp
-                    self.people_right_FOV_pub.publish(self.people_right_FOV)
-                    self.people_right_FOV.poses.clear()
-            self.last_published_time = self.cam_stamp
-        else:
-            if self.fused_poses.poses:
-                # self.get_logger().info(f"Publishing {len(self.fused_poses.poses)} fused detections.")
-                self.people_pub.publish(self.fused_poses)
+
+        if not self.tracking_enabled:
+            self._publish_untracked(camera_points)
+            self._publish_debug_fov()
+            return
+
+        # LiDAR people the camera did not vouch for. These may sustain a track
+        # the camera has lost - the whole point, for a person the pose network
+        # cannot skeletonise - but never start one, because a leg-sized return
+        # on its own is not evidence of a person.
+        lidar_points = []
+        for pose in self.laser_detections:
+            mapped = do_transform_pose(pose, transform)
+            lidar_points.append((mapped.position.x, mapped.position.y))
+
+        measurements = combine_measurements(
+            camera_points,
+            lidar_points,
+            self.tracker.config.max_association_distance,
+        )
+        with self._measurement_lock:
+            self._pending_measurements = measurements
+        self._publish_debug_fov()
+
+    def publish_tracks(self):
+        """Advance the tracker and publish where every confirmed person is.
+
+        The tracker is stepped only from here, on the timer, so it is touched
+        by one thread despite the multi-threaded executor, and so it advances
+        on a clock rather than on whether a detection happened to arrive.
+        """
+        with self._measurement_lock:
+            measurements = self._pending_measurements
+            self._pending_measurements = None
+
+        now = self.get_clock().now()
+        tracks = self.tracker.step(measurements or [], now.nanoseconds * 1e-9)
+        if not tracks:
+            return
+
+        fused = PoseArray()
+        fused.header.stamp = now.to_msg()
+        fused.header.frame_id = "map"
+        for track in tracks:
+            x, y = track.position
+            fused.poses.append(Pose(position=Point(x=x, y=y, z=0.0)))
+        self.fused_poses = fused
+        self.people_pub.publish(fused)
+
+    def _publish_untracked(self, camera_points):
+        """Publish raw fused points, the way the node behaved before tracking.
+
+        Kept for `tracking.enabled: false`, which is how a run is compared
+        against the unfiltered pipeline.
+        """
+        if not camera_points or self.cam_stamp == self.last_published_time:
+            return
+        fused = PoseArray()
+        fused.header.stamp = self.cam_stamp
+        fused.header.frame_id = "map"
+        for x, y in camera_points:
+            fused.poses.append(Pose(position=Point(x=x, y=y, z=0.0)))
+        self.fused_poses = fused
+        self.people_pub.publish(fused)
+        self.last_published_time = self.cam_stamp
+
+    def _publish_debug_fov(self):
+        """Publish the bearing-bound pose arrays the RViz overlay draws."""
+        if not self.debug_mode:
+            return
+        stamp = self.cam_stamp or self.get_clock().now().to_msg()
+        if self.people_left_FOV.poses:
+            self.people_left_FOV.header.stamp = stamp
+            self.people_left_FOV_pub.publish(self.people_left_FOV)
+            self.people_left_FOV.poses.clear()
+        if self.people_right_FOV.poses:
+            self.people_right_FOV.header.stamp = stamp
+            self.people_right_FOV_pub.publish(self.people_right_FOV)
+            self.people_right_FOV.poses.clear()
 
 
 def main(args=None):

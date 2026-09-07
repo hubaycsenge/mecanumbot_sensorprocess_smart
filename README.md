@@ -251,9 +251,13 @@ they do:
 | `max_box_aspect_ratio`                | `1.6`   | Maximum width/height, in both modes. People are taller than wide.              |
 | `proximity_enabled`                   | `true`  | Enables the close-range branch below; `false` restores torso-only behaviour.   |
 | `proximity_min_height_fraction`       | `0.6`   | Share of the frame height a box must fill to count as close.                   |
-| `proximity_top_margin`                | `8.0`   | Pixels from the top edge within which a box counts as clipped by it.           |
-| `proximity_box_conf_acquire`          | `0.5`   | Box confidence to acquire a close-range (cropped, therefore lower-scoring) body. |
+| `proximity_top_margin`                | `8.0`   | Pixels from the top edge within which a box counts as clipped by it; a floor for small frames. |
+| `proximity_top_fraction`              | `0.08`  | The same tolerance as a share of the frame height; the larger of the two wins (58 px at 720p). |
+| `proximity_dominant_height_fraction`  | `0.85`  | A box filling this much of the frame is close whatever its top edge does.       |
+| `proximity_box_conf_acquire`          | `0.4`   | Box confidence to acquire a close-range (cropped, therefore lower-scoring) body. |
 | `proximity_box_conf_retain`           | `0.3`   | ... and to retain it.                                                          |
+| `proximity_best_keypoint_conf_acquire` | `0.5`  | Confidence the best joint needs to acquire close up; knees and ankles score below faces. |
+| `proximity_best_keypoint_conf_retain` | `0.35`  | ... and to retain.                                                             |
 | `proximity_min_valid_keypoints_acquire` | `2`   | Joints over `keypoint_conf` needed to acquire at close range.                  |
 | `proximity_min_valid_keypoints_retain`  | `1`   | ... and to retain.                                                             |
 | `proximity_min_lower_body_acquire`    | `2`     | Of the six hip/knee/ankle joints, how many are needed to acquire close up.     |
@@ -315,12 +319,27 @@ person matters most, so the gate has a second branch for it.
 
 Which branch applies is decided from the **box geometry, not from the keypoints** —
 inferring "this is a close body" from the very joints the branch then stops requiring
-would make the relaxation self-justifying. A detection is close-range when its box
-starts within `proximity_top_margin` of the **top** edge (the body carries on above the
-field of view) and spans at least `proximity_min_height_fraction` of the frame height.
+would make the relaxation self-justifying. A detection is close-range when **either**:
+
+- its box starts within `proximity_top_margin` px **or** `proximity_top_fraction` of the
+  frame height of the **top** edge, whichever is larger (the body carries on above the
+  field of view), **and** spans at least `proximity_min_height_fraction` of the frame; or
+- its box spans `proximity_dominant_height_fraction` of the frame, wherever its top
+  edge happens to sit — nothing at a distance is that big.
+
 For this camera those defaults amount to "nearer than roughly 3.4 m", which overlaps the
 2.3 m at which hips appear — the two branches cover the whole approach with no distance
 at which a person falls between them.
+
+**Why "starts at the top edge" has to be forgiving.** The box is drawn round the body
+the *network* found, not round the person. Loose clothing is not recognised as body, so
+a detection that is unmistakably close — legs filling the picture — can still have its
+top edge tens of pixels inside the frame. A long skirt is the case this was written for;
+a coat, or a chair under a floor-length tablecloth, behaves the same way. The original
+absolute `proximity_top_margin: 8.0` could not be met by any of them: the detection fell
+back on the full-body gate and was rejected as `keypoints 3<6` — for a torso that was
+never in shot. Hence the fractional margin (0.08, i.e. 58 px at 720p) and the
+dominant-height escape hatch.
 
 On that branch the torso requirement is replaced by a **lower-body** one
 (`proximity_min_lower_body_*`, counted over hips, knees and ankles), the keypoint counts
@@ -331,9 +350,18 @@ can be wider than the slice of them that fits in the frame is tall.
 
 What keeps the relaxation honest is that the geometry and the keypoints have to agree. A
 wall panel or a bean bag pushed up against the camera has exactly the same box geometry,
-but it still cannot produce a leg, and `best_keypoint_conf_*` is *not* relaxed on this
-branch. Small floor props are unaffected either way: they are not clipped by the top of
-the frame, so they are still judged on the ordinary gate.
+but it still cannot produce a leg: `proximity_min_lower_body_acquire` of the six
+hip/knee/ankle joints is the check that does the work, and the joints it counts have to
+clear `proximity_best_keypoint_conf_acquire`. That last one is lower than the whole-body
+`best_keypoint_conf_acquire` — knees and ankles score below faces and shoulders, so the
+whole-body value was unmeetable on a legs-only view — but it is still far above
+`keypoint_conf`, so one joint has to be placed convincingly. Small floor props are
+unaffected either way: they are not clipped by the top of the frame and do not fill it,
+so they are still judged on the ordinary gate.
+
+Because the geometry test is now the looser of the two, the lower-body count is the only
+thing standing between a draped chair and a person. `test_person_gating.py` pins that
+down (`TestLooseClothing`), including the tablecloth case.
 
 Detections accepted this way are published with `type` set to `close_range` rather than
 `full_body`. The bearing itself is computed exactly as usual, from whichever joints were
@@ -553,26 +581,72 @@ launch, but it writes it next to the ONNX it loaded — under `install/` in a
 
 ### Parameters
 
-| Parameter           | Default | Function                                                                         |
-| ------------------- | ------- | -------------------------------------------------------------------------------- |
-| `obstacle_buffer_x` | `0.5`   | Metres added behind a wall when a detection has to be pushed out of an obstacle. |
-| `debug_mode`        | `false` | Enables the left/right FOV publishers.                                           |
+| Parameter                           | Default | Function                                                                         |
+| ----------------------------------- | ------- | -------------------------------------------------------------------------------- |
+| `obstacle_buffer_x`                 | `0.5`   | Metres added behind a wall when a detection has to be pushed out of an obstacle. |
+| `debug_mode`                        | `false` | Enables the left/right FOV publishers.                                           |
+| `cam_detection_timeout`             | `0.6`   | Seconds the last `CamPersonDetectionArray` stays usable. Past it the bearings are dropped rather than re-used against fresh scans. |
+| `tracking.enabled`                  | `true`  | Map-frame Kalman tracking. `false` republishes the raw per-frame fusion.          |
+| `tracking.publish_rate`             | `10.0`  | Hz at which `people_fusion` is published, independent of when detections arrive.  |
+| `tracking.max_association_distance` | `0.9`   | Metres a measurement may sit from a track's prediction and still be the same person. |
+| `tracking.min_hits`                 | `2`     | Camera-corroborated measurements before a new track is published.                |
+| `tracking.max_coast_time`           | `1.2`   | Seconds a track survives on prediction alone, with no measurement at all.        |
+| `tracking.max_uncorroborated_time`  | `4.0`   | Seconds a track survives on LiDAR-only measurements after the camera last agreed. |
+| `tracking.measurement_noise`        | `0.25`  | Metres. The scale of the range jump when the bearing wedge slides off a leg.     |
+| `tracking.process_noise`            | `0.08`  | How readily the estimate follows a person changing direction.                    |
+| `tracking.max_reported_speed`       | `2.5`   | m/s ceiling on the reported velocity; above this is an association error.        |
 
 ### Behavior
 
-- For every camera detection, resolves a range in three steps: first look for a LiDAR
-  detection whose bearing falls inside the person's angular bounds; if there is none,
-  extrapolate from the raw scan using the 20th percentile of the valid ranges inside
-  the bounds (so background hits do not dominate); if that also fails, drop the
-  detection.
+- For every **fresh** camera detection (no older than `cam_detection_timeout`), resolves
+  a range in three steps: first look for a LiDAR detection whose bearing falls inside the
+  person's angular bounds — of those, the one nearest the middle of the wedge, which is
+  the one the camera is actually looking at; if there is none, extrapolate from the raw
+  scan using the 20th percentile of the valid ranges inside the bounds (so background
+  hits do not dominate); if that also fails, drop the detection.
 - Validates the result against the static map: a pose landing on an occupied cell is
   ray-traced outward until free space is found (up to 4 m of wall thickness) and then
   offset by `obstacle_buffer_x`.
-- Transforms the accepted poses from `mecanumbot/base_link` into `map` and publishes
-  them as a single `PoseArray`.
-- Re-publishes the previous fused array when the camera timestamp has not changed, so
-  downstream consumers keep seeing the last known people.
-- Runs on a 4-thread `MultiThreadedExecutor`.
+- Transforms the accepted poses from `mecanumbot/base_link` into `map`, and hands them
+  to the map-frame tracker along with the LiDAR-only detections (see below).
+- Publishes the tracker's confirmed people as a `PoseArray` on a timer at
+  `tracking.publish_rate`, with a current stamp.
+- Runs on a 4-thread `MultiThreadedExecutor`. The tracker is stepped only from the
+  publish timer, so it is touched by one thread; the measurement handover from the
+  LiDAR callback is the one place that locks.
+
+#### Map-frame tracking
+
+Without it this node was a pure function of the current frame: a camera bearing arrived,
+a LiDAR range was looked up inside it, a point was published. Anything that stopped the
+camera producing a detection for one frame — a gate rejection, a missed box, a person
+walking out of the tilted-down field of view — stopped `people_fusion` too, and the
+behaviour layer, which judges "is somebody there" by the **age of the last message**,
+read that as the person having gone. Each person is now a constant-velocity Kalman
+estimate of their map-frame position (`person_tracking.py`), which buys three things:
+
+- **Coasting.** A missed frame is predicted through rather than lost, for
+  `tracking.max_coast_time`.
+- **Smoothing.** The range is the noisy half of a fused position — a percentile over a
+  bearing wedge, which jumps by tens of centimetres as the wedge slides across a leg, a
+  coat and the floor behind. The filter averages that instead of handing the jump to
+  Nav2 as a new goal.
+- **Velocity**, which is what tells a leading behaviour whether the person is following
+  or has stopped.
+
+**Corroboration.** A track is only ever *created* by a camera-corroborated measurement,
+because `dets` alone cannot tell a person from any other leg-sized thing the LiDAR sees.
+Once created it can be *updated* by a LiDAR-only one, which is what carries a person
+through a run of camera rejections — but only for `tracking.max_uncorroborated_time`,
+after which the camera has to agree again or the track is dropped. Coasting is memory,
+not belief: it must not turn a person who left into a permanent phantom.
+
+Note this is deliberately **not** a filter on the camera's bounding boxes. An
+image-space filter would smooth the bearing, which is the half the camera measures well,
+and leave the fusion with no bearing at all on the frames the gate rejects — so nothing
+would be published either way. `mecanumbot_lidar_detect_people` tracks its own detections
+with the same model; `person_tracking.py` is the equivalent one frame further down, where
+both sensors have been combined.
 
 ## Node: mecanumbot_detect_tennis
 
@@ -613,7 +687,9 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 | mecanumbot_sensorprocess_smart/mecanumbot_detect_tennis.py             | Tennis ball detection node.                                          |
 | mecanumbot_sensorprocess_smart/ros4hri_bridge.py                       | ROS4HRI conversion, body ID tracking and `/humans/bodies` publishing. |
 | mecanumbot_sensorprocess_smart/person_gating.py                        | Keypoint-evidence, hysteresis and temporal gate for camera detections. |
+| mecanumbot_sensorprocess_smart/person_tracking.py                      | Map-frame constant-velocity tracking of the fused detections.        |
 | test/test_person_gating.py                                             | Unit tests for the detection gate; run without a ROS graph.          |
+| test/test_person_tracking.py                                           | Unit tests for the map-frame tracker; run without a ROS graph.       |
 | launch/mecanumbot_peopledetect.launch.py                               | Launches the people-detection pipeline with shared parameters.       |
 | config/lidar_peopledetect_config.yaml                                  | Runtime ROS parameters for node topics and thresholds.               |
 | models/dr_spaam_5_on_frog.pth                                          | DR-SPAAM pretrained weights used by the LiDAR detector.              |
@@ -625,10 +701,11 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 | deepstream_config/config_infer_yolo26_pose.txt                         | Template `nvinfer` configuration; the node renders a copy per model and size. |
 | deepstream_config/labels.txt                                           | Class label file referenced by the `nvinfer` config.                 |
 
-The YAML file carries the LiDAR node's parameters plus the ROS4HRI block for the
-DeepStream camera node (under its ROS node name, `mecanumbot_cam_detect_people_ds`); the
-Ultralytics camera, fusion and tennis nodes rely on their in-code defaults unless
-overridden on the command line or in the launch file.
+The YAML file carries the LiDAR node's parameters, the gate and ROS4HRI blocks for the
+DeepStream camera node (under its ROS node name, `mecanumbot_cam_detect_people_ds`) and
+the fusion node's tracking block (under `mecanumbot_locate_detections`); the Ultralytics
+camera and tennis nodes rely on their in-code defaults unless overridden on the command
+line or in the launch file.
 
 ## Build and run
 

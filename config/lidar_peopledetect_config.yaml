@@ -122,10 +122,27 @@ mecanumbot_cam_detect_people_ds:
       # bag pressed against the camera has the same geometry but still no leg.
       proximity_enabled: true
       proximity_min_height_fraction: 0.6
+      # How near the top edge the box has to start, in pixels and as a
+      # fraction of the frame height; the larger of the two wins. The box is
+      # drawn round the body the network found, not round the person, so on
+      # loose clothing -- a long skirt, a coat -- the top lands tens of pixels
+      # inside the frame and an absolute 8 px could not be met: the detection
+      # then fell back on the full-body gate and was rejected for a torso that
+      # was never in shot. 0.08 is 58 px at 720p.
       proximity_top_margin: 8.0
+      proximity_top_fraction: 0.08
+      # ... and the escape hatch when even that fails: a box filling this much
+      # of the frame is close whatever its top edge does, because nothing far
+      # away is that big. The lower-body keypoint count below is what still
+      # has to be satisfied, so this does not let a prop through.
+      proximity_dominant_height_fraction: 0.85
       # A cropped body scores lower than a whole one, so the box gates drop.
-      proximity_box_conf_acquire: 0.5
+      proximity_box_conf_acquire: 0.4
       proximity_box_conf_retain: 0.3
+      # Knees and ankles score lower than faces and shoulders, so the
+      # whole-body best_keypoint_conf_* is unmeetable on a legs-only view.
+      proximity_best_keypoint_conf_acquire: 0.5
+      proximity_best_keypoint_conf_retain: 0.35
       proximity_min_valid_keypoints_acquire: 2
       proximity_min_valid_keypoints_retain: 1
       # Of the six hip/knee/ankle joints. This is what keeps props out.
@@ -139,3 +156,56 @@ mecanumbot_cam_detect_people_ds:
       iou_threshold: 0.3
       # Logs every rejected box with the check it failed. Verbose; for tuning.
       log_rejections: false
+
+# Fuses the camera bearings with the LiDAR ranges and publishes `people_fusion`,
+# which is the single interface the behaviour layer consumes. The node had no
+# section here before, so everything below used to be a hard-coded default.
+mecanumbot_locate_detections:
+  ros__parameters:
+    # Metres to place a detection behind a mapped wall it appears to be inside.
+    obstacle_buffer_x: 0.5
+    debug_mode: false
+    # How long the last CamPersonDetectionArray stays usable. The camera is the
+    # slower of the two inputs, so its bearings are deliberately re-used
+    # between messages -- but only this long: past it the person may have left,
+    # and a stale wedge would keep placing them wherever the scan hits inside
+    # it. Keep it at a few camera frames.
+    cam_detection_timeout: 0.6
+
+    # ---- map-frame tracking (see person_tracking.py) ----
+    # A constant-velocity Kalman estimate per person. It exists because the
+    # camera gate rejects real people -- a long skirt or a tablecloth gives the
+    # pose network no skeleton to find -- and before this every rejection
+    # emptied `people_fusion`, which the behaviour layer reads as the person
+    # having gone. It also smooths the range, which is the noisy half of a
+    # fused position: the LiDAR range is a percentile over a bearing wedge and
+    # jumps by tens of centimetres as that wedge slides off a leg.
+    tracking:
+      # false republishes the raw per-frame fusion, for comparing a run against
+      # the unfiltered pipeline.
+      enabled: true
+      # `people_fusion` is published on this timer rather than on arrival of a
+      # detection, so it keeps a steady rate through a run of rejections.
+      publish_rate: 10.0
+      # Metres a measurement may sit from a track's prediction and still be
+      # taken as the same person. Mostly absorbs the wedge range noise, not
+      # walking speed.
+      max_association_distance: 0.9
+      # Camera-corroborated measurements before a new track is published.
+      min_hits: 2
+      # Seconds a track survives on prediction alone, with no measurement of
+      # any kind. Long enough to cross dropped frames, short enough that
+      # someone who walks out stops being reported.
+      max_coast_time: 1.2
+      # Seconds a track survives on LiDAR-only measurements after the camera
+      # last agreed. This is the budget for the long-skirt case; raise it if
+      # people are still lost, lower it if a track outlives the person.
+      max_uncorroborated_time: 4.0
+      # Metres. The scale of the jump when the bearing wedge slides off a leg.
+      measurement_noise: 0.25
+      # How wrong the constant-velocity assumption is allowed to be, i.e. how
+      # readily the estimate follows a person changing direction.
+      process_noise: 0.08
+      # m/s. Above this is an association error, not a person, so the reported
+      # velocity is clamped rather than believed.
+      max_reported_speed: 2.5

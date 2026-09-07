@@ -136,8 +136,12 @@ class DeepStreamPersonDetectNode(Node):
                 ("detection_gate.proximity_enabled", True),
                 ("detection_gate.proximity_min_height_fraction", 0.6),
                 ("detection_gate.proximity_top_margin", 8.0),
-                ("detection_gate.proximity_box_conf_acquire", 0.5),
+                ("detection_gate.proximity_top_fraction", 0.08),
+                ("detection_gate.proximity_dominant_height_fraction", 0.85),
+                ("detection_gate.proximity_box_conf_acquire", 0.4),
                 ("detection_gate.proximity_box_conf_retain", 0.3),
+                ("detection_gate.proximity_best_keypoint_conf_acquire", 0.5),
+                ("detection_gate.proximity_best_keypoint_conf_retain", 0.35),
                 ("detection_gate.proximity_min_valid_keypoints_acquire", 2),
                 ("detection_gate.proximity_min_valid_keypoints_retain", 1),
                 ("detection_gate.proximity_min_lower_body_acquire", 2),
@@ -372,8 +376,18 @@ class DeepStreamPersonDetectNode(Node):
             proximity_enabled=bool(gate("proximity_enabled")),
             proximity_min_height_fraction=float(gate("proximity_min_height_fraction")),
             proximity_top_margin=float(gate("proximity_top_margin")),
+            proximity_top_fraction=float(gate("proximity_top_fraction")),
+            proximity_dominant_height_fraction=float(
+                gate("proximity_dominant_height_fraction")
+            ),
             proximity_box_conf_acquire=float(gate("proximity_box_conf_acquire")),
             proximity_box_conf_retain=float(gate("proximity_box_conf_retain")),
+            proximity_best_keypoint_conf_acquire=float(
+                gate("proximity_best_keypoint_conf_acquire")
+            ),
+            proximity_best_keypoint_conf_retain=float(
+                gate("proximity_best_keypoint_conf_retain")
+            ),
             proximity_min_valid_keypoints_acquire=int(
                 gate("proximity_min_valid_keypoints_acquire")
             ),
