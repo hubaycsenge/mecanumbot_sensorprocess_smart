@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Export a YOLO pose checkpoint to ONNX at a fixed input size.
+Export a YOLO checkpoint to ONNX at a fixed input size.
+
+Pose checkpoints for `mecanumbot_onboard_cam_detect_people`, and plain detection
+checkpoints for `mecanumbot_onboard_cam_detect_objects` -- the export is the
+same either way, and so is the folder layout; only the nvinfer config that
+consumes the result differs.
 
 An ONNX export is fixed to the `imgsz` it was exported at, so the exports are
 kept one folder per size -- `models/imgsz_<n>/` -- next to the size-independent
@@ -11,6 +16,7 @@ nvinfer config has to be edited to match.
 
     python3 conv_to_onnx.py yolo26m-pose --imgsz 1280
     python3 conv_to_onnx.py yolo26n-pose --imgsz 640
+    python3 conv_to_onnx.py yolo26m --imgsz 640      # the fetch detector
 
 The TensorRT engine is built beside the ONNX by build_engine.py, or by nvinfer
 on the first launch. An engine is never shared between sizes, because it sits

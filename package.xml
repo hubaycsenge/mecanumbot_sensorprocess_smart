@@ -18,6 +18,8 @@
   <exec_depend>mecanumbot_msgs</exec_depend>
   <!-- ROS4HRI (REP-155) message set, used by the camera detectors -->
   <exec_depend>hri_msgs</exec_depend>
+  <!-- Bounding boxes out of the fetch detector, and the located ball -->
+  <exec_depend>vision_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

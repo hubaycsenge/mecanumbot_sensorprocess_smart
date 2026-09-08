@@ -9,14 +9,28 @@ This package provides ROS 2 nodes that extract information from mecanumbot's on-
 | `mecanumbot_lidar_detect_people`       | Runs DR-SPAAM on LiDAR scans to detect and track people.                                  | `mecanumbot_sensorprocess_smart/mecanumbot_lidar_detect_people.py`       |
 | `mecanumbot_cam_detect_people`         | Runs YOLO pose inference on the main camera or a compressed image topic to detect people. | `mecanumbot_sensorprocess_smart/mecanumbot_cam_detect_people.py`         |
 | `mecanumbot_onboard_cam_detect_people` | Runs the DeepStream-based camera people detector on NVIDIA hardware.                      | `mecanumbot_sensorprocess_smart/mecanumbot_onboard_cam_detect_people.py` |
-| `mecanumbot_locate_detections`         | Fuses camera and LiDAR detections and projects them into map space.                       | `mecanumbot_sensorprocess_smart/mecanumbot_locate_detections.py`         |
+| `mecanumbot_onboard_cam_detect_objects`| Runs a plain DeepStream YOLO detector that finds **people and tennis balls**, for the fetch game. | `mecanumbot_sensorprocess_smart/mecanumbot_onboard_cam_detect_objects.py` |
+| `mecanumbot_locate_detections`         | Fuses camera and LiDAR detections and projects them into map space; also places the ball. | `mecanumbot_sensorprocess_smart/mecanumbot_locate_detections.py`         |
 | `mecanumbot_detect_tennis`             | Detects tennis balls from the camera stream and publishes their presence state.           | `mecanumbot_sensorprocess_smart/mecanumbot_detect_tennis.py`             |
 
-The camera detector comes in two variants: `mecanumbot_cam_detect_people` (PyTorch /
-Ultralytics, portable) and `mecanumbot_onboard_cam_detect_people` (DeepStream, Jetson
-only). Run one or the other — both publish `cam_people_detections`. The DeepStream
-variant additionally publishes the ROS4HRI (REP-155) `/humans/bodies` tree; see
-[ROS4HRI (REP-155) output](#ros4hri-rep-155-output).
+The camera detector comes in **three** variants, and which one is running changes what
+the robot can do:
+
+| Variant | Model | Publishes | Use it for |
+| --- | --- | --- | --- |
+| `mecanumbot_cam_detect_people` | YOLO pose, PyTorch/Ultralytics, portable | `cam_people_detections` (skeletons) | a dev machine, or a run without DeepStream |
+| `mecanumbot_onboard_cam_detect_people` | YOLO pose, DeepStream, Jetson only | `cam_people_detections` + ROS4HRI | leading and ostensive experiments — anything needing keypoints |
+| `mecanumbot_onboard_cam_detect_objects` | plain YOLO (COCO), DeepStream, Jetson only | `cam_people_boxes`, `cam_ball_boxes` (boxes, no keypoints) | the fetch game — the only variant that can see a ball |
+
+Run **one** of them. On an Orin Nano two networks on one camera stream is most of the
+GPU, and the fetch detector is a straight trade rather than an upgrade: a pose network
+has exactly one class, so there is no threshold at which it starts finding tennis
+balls, and a plain detector has no skeletons, so the ostensive gestures are unavailable
+while it is the one in use. `mecanumbot_locate_detections` accepts person evidence from
+either kind, so `people_fusion` keeps flowing whichever is up.
+
+The two pose variants additionally publish the ROS4HRI (REP-155) `/humans/bodies` tree;
+see [ROS4HRI (REP-155) output](#ros4hri-rep-155-output).
 
 ## Pipeline
 
@@ -25,10 +39,19 @@ scan ──► mecanumbot_lidar_detect_people ──► dr_spaam/dets ─┐
                                                            ├─► mecanumbot_locate_detections ──► people_fusion
 camera ─► mecanumbot_cam_detect_people ──► cam_people_detections ┘
                                        └─► /humans/bodies/…  (ROS4HRI, DeepStream variant)
+
+                       ... or, for the fetch game, instead of the pose detector:
+
+camera ─► mecanumbot_onboard_cam_detect_objects ─┬─► cam_people_boxes ─► (same fusion) ─► people_fusion
+                                                 └─► cam_ball_boxes ──► mecanumbot_locate_detections
+                                                                          ├─► ball_fusion      (PoseArray, map)
+                                                                          └─► ball_detections  (Detection3DArray, map)
 ```
 
 `people_fusion` (`geometry_msgs/PoseArray`, `map` frame) is what the behaviour trees
-in `mecanumbot_behaviours` consume. The LiDAR node additionally publishes
+in `mecanumbot_behaviours` consume. `ball_detections`
+(`vision_msgs/Detection3DArray`, `map` frame) is the same interface for the ball, and
+is what `mecanumbot_fetch_behaviour` reads. The LiDAR node additionally publishes
 `subject_pose` directly for the leading behaviours. The ROS4HRI topics are a parallel,
 standards-compliant output for external HRI tooling; nothing inside this repository
 consumes them yet.
@@ -39,8 +62,14 @@ consumes them yet.
 camera people detector (with `from_topic` forced to `true`), and the
 detection-localization node in the `mecanumbot` namespace, all with
 `config/lidar_peopledetect_config.yaml` applied. Node names must match the YAML's
-top-level keys, so do not rename them in the launch file. The DeepStream and tennis
-ball nodes are not started by this launch file.
+top-level keys, so do not rename them in the launch file.
+
+`detector:=pose | fetch | both` picks which camera detector it starts — `pose` (the
+default) the Ultralytics node, `fetch` the DeepStream people-and-balls node, `both`
+for a bench comparison. The DeepStream pose node and the legacy tennis-ball node are
+not started by this launch file; the DeepStream pose node is started by
+`mecanumbot_bringup`'s base launch, which also has `use_fetch_detector:=true` for the
+fetch one.
 
 ## Node: mecanumbot_lidar_detect_people
 
@@ -72,6 +101,9 @@ ball nodes are not started by this launch file.
 | `leading_mode`              | `true`                   | Enables the `subject_pose` publisher.                                                 |
 | `obstacle_exclusion_radius` | `0.2`                    | Inflation radius in metres applied to the keepout mask.                               |
 | `detection_frame`           | `base_scan`              | Accepts `base_scan` or `map`; anything else falls back to `base_scan` with a warning. |
+| `track_require_motion`      | `true`                   | Only publish a track that has been seen moving. See *Motion, and re-seeding it* below. |
+| `track_reseed_memory`       | `1.5`                    | Seconds a dropped track's motion evidence is kept for its replacement to inherit.     |
+| `track_reseed_distance`     | `0.5`                    | Metres within which a new track counts as the replacement of a dropped one.           |
 
 #### GPU load control
 
@@ -112,6 +144,36 @@ ball nodes are not started by this launch file.
 - Uses TF from the scan frame to `map` for the `subject_pose` output, and keeps
   republishing the last known subject pose when no new one can be computed.
 - Spins on a `MultiThreadedExecutor`.
+
+### Motion, and re-seeding it
+
+A track is only published once it has been seen exceeding 0.1 m/s at least once
+(`track_require_motion`). This is the guard that keeps `dets` free of furniture: a 2D
+scan at ankle height is full of table legs, bin corners and door frames, DR-SPAAM will
+call some of them people, and almost none of them move. The flag is sticky, so a person
+who walks in and then stands still stays a person.
+
+Sticky **per track** was the problem. Close to the robot a person's two legs subtend a
+wide angle and the detector resolves them as one blob, then two, then one again; each
+flicker longer than `track_max_missed_time` drops the track, and the replacement starts
+over with no motion of its own. A person standing half a metre away — exactly where the
+camera is blind and the LiDAR is the only sensor left — could therefore stop being
+reported altogether, having no way to prove again something they had already proved.
+
+So an expiring track leaves a **ghost**: its last position and whether it had been seen
+moving, kept for `track_reseed_memory` seconds. A new track starting within
+`track_reseed_distance` of a ghost inherits its motion evidence. It does **not** inherit
+`hits`, so it still has to be seen `track_min_hits` times before it is published — the
+re-seed restores what was already established about this person and proves the rest
+again. A ghost of something that never moved lends nothing, so the furniture guard is
+untouched.
+
+`track_require_motion: false` publishes stationary detections outright. That also
+publishes the furniture, which is why it is not the default.
+
+The tracker itself lives in `lidar_tracking.py`, apart from the node, so it can be
+unit-tested on a machine with neither `torch` nor `dr_spaam` installed
+(`test/test_lidar_tracking.py`).
 
 ### Keeping the GPU load down on a Jetson Orin Nano
 
@@ -559,6 +621,122 @@ launch, but it writes it next to the ONNX it loaded — under `install/` in a
 `model_params.models_dir` at the source tree, or build engines ahead of time with
 `build_engine.py`, to keep them.
 
+## Node: mecanumbot_onboard_cam_detect_objects
+
+The fetch game's detector. One DeepStream pass over a plain YOLO detector (`yolo26m`,
+the COCO 80-class model), filtered down to the two classes the game is about and
+published as bounding boxes on two topics. Registers as
+**`mecanumbot_cam_detect_objects_ds`**, which is the YAML key its parameters must sit
+under.
+
+Why a second node rather than a parameter on the pose one: a pose network has exactly
+one class. Finding a tennis ball is not a threshold away from finding a person with
+a pose model — it is a different network, a different parser
+(`NvDsInferParseYolo`, from **DeepStream-Yolo**, not the `…_Yolo_pose` library the
+pose node uses) and a different nvinfer config. The pipeline around it is the same,
+and `nvinfer_config.py` is the code the two share.
+
+### Publishers
+
+| Topic | Data type | Function |
+| --- | --- | --- |
+| `cam_people_boxes` | `vision_msgs/msg/Detection2DArray` | Accepted person boxes, in image pixels. |
+| `cam_ball_boxes` | `vision_msgs/msg/Detection2DArray` | Accepted ball boxes, in image pixels. |
+| `cam_object_detections/debug_image/compressed` | `sensor_msgs/msg/CompressedImage` | Every box, accepted or refused, with the check it failed. Only when `debug_mode` is true. |
+
+Two topics rather than one labelled array because the consumers are different: the
+ball boxes become a ball position, the person boxes become a bearing wedge the LiDAR
+ranges, and a subscriber that wants one should not filter the other out at 15 Hz.
+
+**Pixels, not angles.** The pose node publishes bearings, having done the image → angle
+conversion itself; this one publishes boxes as they came out of the network. That is
+the standard type's shape, it puts the camera model in one place
+(`mecanumbot_locate_detections`, which has to have it anyway to work out the range),
+and it means only one of the two nodes has an opinion about which way round the frame
+is.
+
+### Subscribers
+
+| Topic | Data type | Processing |
+| --- | --- | --- |
+| `camera/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | Decoded and pushed into the pipeline's appsrc. Only when `from_topic` is true; otherwise the source is `webcam_device`. |
+
+### Parameters
+
+| Parameter | Default | Function |
+| --- | --- | --- |
+| `camera_params.camera_width` / `_height` | `1280` / `720` | Frame the boxes are expressed in. Must match `mecanumbot_locate_detections`. |
+| `camera_params.camera_fov` | `60°` | Horizontal field of view, logged for cross-checking against the fusion node's copy. |
+| `model_params.imgsz` | `640` | Selects `models/imgsz_<n>/`. |
+| `model_params.model_name` | `yolo26m` | Stem of the ONNX in that folder. |
+| `model_params.precision` | `fp16` | Must match `network-mode` in the nvinfer config. |
+| `model_params.models_dir` | `''` | Empty means the package share `models/`. |
+| `model_params.custom_lib_path` | `''` | Where **DeepStream-Yolo** was built. Empty keeps the path in the config file. |
+| `model_params.nvinfer_config` | `''` | A complete config to hand nvinfer untouched; disables all substitution. |
+| `classes.person_id` / `classes.ball_id` | `0` / `32` | COCO numbering for the shipped model. |
+| `classes.person_label` / `classes.ball_label` | `person` / `sports ball` | What travels downstream — a numeric id means nothing once the detection has left the camera. |
+| `classes.person_topic` / `classes.ball_topic` | `cam_people_boxes` / `cam_ball_boxes` | Where each class is published. |
+| `person_gate.*`, `ball_gate.*` | see below | Per-class shape, confidence and confirmation. |
+| `debug_mode` | `false` | Publishes the annotated frame. Costs a JPEG encode per frame. |
+| `log_rejections` | `false` | Logs every refused box with the check it failed. |
+
+### The gate, without keypoints
+
+`person_gating.py` decides whether a box is a person by looking at the skeleton inside
+it, and that whole argument depends on the model emitting keypoints. This one does not,
+so `object_gating.py` keeps the two stages that survive — hysteresis (`conf_acquire`
+to be taken seriously, the looser `conf_retain` to be kept) and temporal confirmation
+(`min_hits` frames to be published, `max_missed_time` of dropout tolerated) — plus a
+shape check.
+
+Shape is doing real work for the ball and almost none for the person. **A tennis ball
+is round**, so its box is square at every range and from every direction; no other
+object in this system has that property, and `min_aspect` / `max_aspect` around 1 are
+the cheapest thing separating a ball from a yellow floor marking, a reflection or a
+chair leg. They are not `1.0 ± nothing` because a ball in flight smears and a ball
+against an obstacle is clipped. A person is only loosely "taller than wide", and close
+to the camera not even that, so their bounds are wide on purpose: the work of not
+believing a coat rack is a person is done downstream, where the LiDAR has to agree
+there is something at that bearing.
+
+Shape is checked *before* the confirmer and separately from it, so a box of the wrong
+shape cannot hold a track alive.
+
+### The nvinfer config
+
+`deepstream_config/config_infer_yolo26_det.txt` is a template; `onnx-file`,
+`model-engine-file`, `infer-dims` and `labelfile-path` are rewritten at startup from
+`model_params` into a copy in `/tmp`, exactly as the pose node does it, and the shared
+mechanics live in `nvinfer_config.py`.
+
+Two settings in it are not free choices:
+
+- **`maintain-aspect-ratio=1`.** Letterboxed, not stretched. A tennis ball is
+  recognised by being round, and stretching a 16:9 frame into a square network input
+  turns every ball into an ellipse of aspect ~1.78 — which breaks the shape gate above
+  *and* the apparent-size range downstream, since that reads the ball's diameter off
+  the box. The pose config stretches because a person's shape is not what identifies
+  them.
+- **`gie-unique-id=2`.** Different from the pose node's, so the two can run at once.
+
+The `custom-lib-path` points at **DeepStream-Yolo**'s
+`libnvdsinfer_custom_impl_Yolo.so` — a different library from the pose node's
+`libnvdsinfer_custom_impl_Yolo_pose.so`, with a different parser function. Both are
+machine-specific paths that have to be edited or overridden with
+`model_params.custom_lib_path`.
+
+**`yolo26m.pt` is not among the shipped model files** -- only the pose checkpoints and
+`yolo26n.pt` are. Fetch it (ultralytics downloads it on first use) and export it before
+this node can run:
+
+```bash
+# in the package's models/ folder, on a machine with ultralytics
+python3 conv_to_onnx.py yolo26m --imgsz 640
+# the engine is built by nvinfer on the first launch (minutes), or ahead of time
+# on the Jetson -- engines do not transfer between machines
+python3 build_engine.py imgsz_640/yolo26m.onnx
+```
+
 ## Node: mecanumbot_locate_detections
 
 ### Publishers
@@ -568,6 +746,8 @@ launch, but it writes it next to the ONNX it loaded — under `install/` in a
 | `people_fusion`                   | `geometry_msgs/msg/PoseArray` | Publishes fused detections in map space.                                                    |
 | `cam_people_detections/left_FOV`  | `geometry_msgs/msg/PoseArray` | Left field-of-view bound of each camera detection. Only created when `debug_mode` is true.  |
 | `cam_people_detections/right_FOV` | `geometry_msgs/msg/PoseArray` | Right field-of-view bound of each camera detection. Only created when `debug_mode` is true. |
+| `ball_fusion`                     | `geometry_msgs/msg/PoseArray` | Tracked balls in map space. Mirrors `people_fusion`; what rviz draws. |
+| `ball_detections`                 | `vision_msgs/msg/Detection3DArray` | The same balls, labelled and with a score and a diameter. What `mecanumbot_fetch_behaviour` reads. |
 
 ### Subscribers
 
@@ -578,6 +758,8 @@ launch, but it writes it next to the ONNX it loaded — under `install/` in a
 | `scan`                  | `sensor_msgs/msg/LaserScan`                   | Stores the current scan for range extrapolation.                       |
 | `/map`                  | `nav_msgs/msg/OccupancyGrid`                  | Loads the static map grid (TRANSIENT_LOCAL QoS).                       |
 | `/amcl_pose`            | `geometry_msgs/msg/PoseWithCovarianceStamped` | Tracks the robot pose in map coordinates.                              |
+| `cam_ball_boxes`        | `vision_msgs/msg/Detection2DArray`            | Ball boxes from the fetch detector, in image pixels. Placed on the ball timer, not on arrival. |
+| `cam_people_boxes`      | `vision_msgs/msg/Detection2DArray`            | Person boxes from the fetch detector; converted to the same bearing wedge a `CamPersonDetection` carries. |
 
 ### Parameters
 
@@ -595,6 +777,32 @@ launch, but it writes it next to the ONNX it loaded — under `install/` in a
 | `tracking.measurement_noise`        | `0.25`  | Metres. The scale of the range jump when the bearing wedge slides off a leg.     |
 | `tracking.process_noise`            | `0.08`  | How readily the estimate follows a person changing direction.                    |
 | `tracking.max_reported_speed`       | `2.5`   | m/s ceiling on the reported velocity; above this is an association error.        |
+| `tracking.camera_frame`             | `mecanumbot/head_link` | Frame the blind zone is measured from. The head, not the base: the head turns. |
+| `tracking.exempt_close_range`       | `true`  | Treat a track nearer than `camera_blind_range` as one the camera cannot check.   |
+| `tracking.exempt_outside_fov`       | `true`  | Treat a track outside `camera_half_fov_deg` as one the camera cannot check.      |
+| `tracking.camera_blind_range`       | `0.9`   | Metres inside which there is not enough of a person in frame to detect at all.   |
+| `tracking.camera_half_fov_deg`      | `30.0`  | Half the camera's horizontal field of view.                                      |
+| `tracking.max_blind_zone_time`      | `30.0`  | Seconds a track is reported on the exemption before the camera has to agree again. |
+| `tracking.blind_zone_min_hits`      | `5`     | Consecutive LiDAR-only measurements inside the blind zone that confirm a track.  |
+| `tracking.blind_zone_creates_tracks`| `true`  | Whether a LiDAR-only measurement in the blind zone may start a track, not just sustain one. |
+| `camera_params.camera_width` / `_height` | `1280` / `720` | The frame the incoming boxes are in. Must match the detector's. |
+| `camera_params.camera_fov`          | `60°`   | Horizontal field of view. The bearing and the apparent-size range both come from it. |
+| `camera_params.camera_vfov`         | `0.0`   | `0.0` derives it from the frame shape, assuming square pixels. |
+| `ball.enabled`                      | `true`  | The ball path as a whole. |
+| `ball.boxes_topic`                  | `cam_ball_boxes` | Where the ball boxes come from. |
+| `ball.class_id`                     | `sports ball` | The label the located ball is published under. |
+| `ball.detection_timeout`            | `0.6`   | Seconds a ball box stays usable. |
+| `ball.publish_rate`                 | `10.0`  | Hz at which `ball_fusion` / `ball_detections` are published. |
+| `ball.diameter`                     | `0.067` | A regulation tennis ball [m]. Every apparent-size range scales with it. |
+| `ball.range_source`                 | `size`  | `size` or `ground_plane` — which estimator supplies the published range. |
+| `ball.camera_x` / `ball.camera_z`   | `0.13` / `0.21` | Where the camera is in the base frame [m]. **Measure these**, see below. |
+| `ball.camera_pitch_deg`             | `0.0`   | Positive looks up. |
+| `ball.floor_z`                      | `-0.01` | The floor in the base frame; `base_link` sits 0.01 m above `base_footprint`. |
+| `ball.min_range` / `ball.max_range` | `0.15` / `6.0` | Outside this band a range is not believed and nothing is published. |
+| `ball.disagreement_warn`            | `0.6`   | Metres the two estimators may differ by before it is worth a one-off warning. |
+| `ball.tracking.*`                   | — | Alpha-beta smoothing in the map frame; see `ball_locating.py`. |
+| `person_boxes.enabled`              | `true`  | Accept person evidence from the fetch detector as well as the pose one. |
+| `person_boxes.topic`                | `cam_people_boxes` | Where those boxes come from. |
 
 ### Behavior
 
@@ -641,12 +849,117 @@ through a run of camera rejections — but only for `tracking.max_uncorroborated
 after which the camera has to agree again or the track is dropped. Coasting is memory,
 not belief: it must not turn a person who left into a permanent phantom.
 
+**The blind zone.** That rule has one exception, and it is the close-range case the
+leading experiment runs into. Demanding corroboration only makes sense where the camera
+could have supplied it. The camera sits on the head at ~0.22 m with a ~36° vertical field
+of view, so a person nearer than about a metre has nothing in frame the pose network can
+call a body — the `proximity_*` gate above buys back the last stretch of that, but not
+all of it — and a person outside the horizontal field of view is not in the picture at
+all, which is most of a leading trial, since the human being led walks behind the robot.
+In neither case is the camera's silence evidence that nobody is there. It is evidence of
+nothing.
+
+A track the camera *could not* have seen therefore holds `tracking.max_uncorroborated_time`
+instead of spending it, and a consistent run of LiDAR-only measurements there may also
+**create** one — the only path by which the LiDAR alone asserts a person, which is why it
+costs `tracking.blind_zone_min_hits` rather than `tracking.min_hits`. What keeps it
+honest is that the exemption is bounded on three sides:
+
+- **Geometry.** It applies only inside `camera_blind_range` of the head or outside
+  `camera_half_fov_deg` of where the head is pointing, computed from the live
+  `map → head_link` transform. With no transform there is no exemption at all — the
+  stricter behaviour, which is the right way to fail.
+- **`tracking.max_coast_time`, unchanged.** The LiDAR has to keep measuring. A track
+  nothing is measuring still dies in about a second, blind zone or not, so a person who
+  walks away still ends.
+- **`tracking.max_blind_zone_time`.** Past it the track is *silenced* rather than
+  dropped: it goes on absorbing the LiDAR returns, so the next one cannot simply spawn a
+  replacement and start the clock over, and one corroborated frame brings the person
+  straight back. Expiring it instead would be no bound at all.
+
+Set both `exempt_*` false to demand corroboration everywhere, which is the behaviour
+before this existed; `tracking.blind_zone_creates_tracks: false` keeps the clock hold for
+tracks that already exist while restoring "only the camera introduces a person".
+
 Note this is deliberately **not** a filter on the camera's bounding boxes. An
 image-space filter would smooth the bearing, which is the half the camera measures well,
 and leave the fusion with no bearing at all on the frames the gate rejects — so nothing
 would be published either way. `mecanumbot_lidar_detect_people` tracks its own detections
 with the same model; `person_tracking.py` is the equivalent one frame further down, where
 both sensors have been combined.
+
+#### Locating the ball
+
+The LiDAR cannot help with a ball at all, and that is the whole reason this half of the
+node exists. The LDS-02 scans one horizontal plane about 0.12 m up; a tennis ball is
+0.067 m across and sits on the floor, so it is **never** in that plane. Looking a range
+up inside the ball's bearing wedge — which is exactly what the person path does — would
+return the range of whatever is *behind* the ball, and the robot would drive
+confidently past the thing it was sent for.
+
+So both the bearing and the range come from the camera, by the two routes a single
+camera has. The geometry is `ball_locating.py`; the node is the ROS end of it.
+
+**Apparent size** (`ball.range_source: size`, the default). A tennis ball is a known
+0.067 m across and is round, so its box width is its diameter whatever direction it is
+seen from — no other object in this system has that property. With a pinhole model,
+`range = f · D / d_px`. It degrades gracefully (a ball at 4 m is about 18 px across at
+720p through a 60° lens, still measurable), it needs nothing but the lens, and **it does
+not care where the camera is pointing** — which matters, because the fetch tree sweeps
+the neck while it searches and nothing tells this node what the tilt currently is.
+
+**Ground plane** (`ball.range_source: ground_plane`). The ball rests on the floor, so
+its ray meets a known plane — solved for one radius above the floor, since that is where
+the ball's centre is. More accurate close in, worthless near the horizon where a small
+elevation error is a large range error, and it depends on `ball.camera_z` and
+`ball.camera_pitch_deg` being right. Switch to it once those have actually been
+measured.
+
+Both are computed whenever they can be, one is published, and a persistent disagreement
+is logged **once**, because that is what a wrong camera mounting looks like and there is
+otherwise no way to notice it: each estimator on its own produces a perfectly plausible
+number from wrong inputs. The other estimator also stands in when the preferred one has
+nothing to say — a ball above the horizon has no ground solution but still has a size.
+With neither in `[ball.min_range, ball.max_range]`, **nothing is published**; a box of
+three pixels is not a marginal measurement of a distant ball, it is not a measurement.
+
+**The mounting numbers are parameters, not TF lookups**, and that is deliberate. The
+URDF's `head_link` is rotated 90° about x and `camera_link` another 90° about y, so
+neither is an x-forward, z-up frame and neither gives the camera's height above the
+floor without unpicking two rotations that were written for the meshes. Two measured
+numbers are more honest than a derivation nobody can check by looking at the robot —
+and they are logged at startup, so a run says what it assumed.
+
+**The published `z` is the point.** The grabbers are a horizontal pincer whose shafts
+sit at about z = 0.034 with a 0.116 m clear gap, and there is no lift, so a ball on a
+table or in somebody's hand is one the robot cannot have however close it drives. From
+a bearing alone, "the ball is on the table" and "the ball is not here" are the same
+fact. This is the same argument `mecanumbot_seek` makes about the Deep3R point cloud's
+height, one sensor cheaper.
+
+Tracking is an alpha-beta filter per ball in the map frame — deliberately lighter than
+the person tracker's Kalman, because a ball is one cleanly-shaped unambiguous target
+with none of a crowd's association problems. What the filter is actually for is the
+range noise: an apparent-size range goes as 1/d_px, so one pixel of box jitter at 4 m is
+about 20 cm. `ball.tracking.max_coast_time` is short (1 s) on purpose — a ball that has
+been picked up must stop being reported quickly, or the robot keeps driving at the floor
+where it used to be. Height is smoothed but never given a velocity: somebody picking the
+ball up is a step, not a trend.
+
+#### Person boxes from the fetch detector
+
+The fetch detector replaces the pose detector rather than joining it, so its person
+boxes have to be able to feed the same fusion. They arrive as pixels and become the same
+bearing wedge a `CamPersonDetection` carries, which is all this node ever used of one;
+everything downstream — the LiDAR range lookup, the map occlusion check, the tracker —
+is unchanged. Running both detectors is harmless: the two wedges land on the same person
+and the tracker's association absorbs the duplicate.
+
+The one thing to watch is that the detector and this node hold **two copies of the
+camera geometry** and never compare them, because they never talk. A box centred outside
+the declared frame is warned about once, which is the cheapest symptom of their having
+drifted apart — and until they agree, every bearing and every apparent-size range
+computed here is wrong by the ratio between them.
 
 ## Node: mecanumbot_detect_tennis
 
@@ -680,16 +993,24 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 
 | File or folder                                                         | Function                                                             |
 | ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| mecanumbot_sensorprocess_smart/mecanumbot_lidar_detect_people.py       | Main detection node and tracking pipeline.                           |
+| mecanumbot_sensorprocess_smart/mecanumbot_lidar_detect_people.py       | Main LiDAR detection node; the tracker itself is in `lidar_tracking.py`. |
 | mecanumbot_sensorprocess_smart/mecanumbot_cam_detect_people.py         | Main camera people detection node.                                   |
 | mecanumbot_sensorprocess_smart/mecanumbot_onboard_cam_detect_people.py | DeepStream-based camera people detection node.                       |
-| mecanumbot_sensorprocess_smart/mecanumbot_locate_detections.py         | Detection fusion and localization node.                              |
+| mecanumbot_sensorprocess_smart/mecanumbot_onboard_cam_detect_objects.py | DeepStream people-and-balls detection node, for the fetch game.      |
+| mecanumbot_sensorprocess_smart/mecanumbot_locate_detections.py         | Detection fusion and localization node; also places the ball.        |
+| mecanumbot_sensorprocess_smart/nvinfer_config.py                       | Rendering an nvinfer config for a selected model; shared by both DeepStream nodes. |
+| mecanumbot_sensorprocess_smart/object_gating.py                        | Shape, hysteresis and temporal gate for the keypoint-free detector.  |
+| mecanumbot_sensorprocess_smart/ball_locating.py                        | Pinhole camera model, the two ball range estimators, and the map-frame ball tracker. |
 | mecanumbot_sensorprocess_smart/mecanumbot_detect_tennis.py             | Tennis ball detection node.                                          |
 | mecanumbot_sensorprocess_smart/ros4hri_bridge.py                       | ROS4HRI conversion, body ID tracking and `/humans/bodies` publishing. |
 | mecanumbot_sensorprocess_smart/person_gating.py                        | Keypoint-evidence, hysteresis and temporal gate for camera detections. |
-| mecanumbot_sensorprocess_smart/person_tracking.py                      | Map-frame constant-velocity tracking of the fused detections.        |
+| mecanumbot_sensorprocess_smart/person_tracking.py                      | Map-frame constant-velocity tracking of the fused detections, and the camera blind zone. |
+| mecanumbot_sensorprocess_smart/lidar_tracking.py                       | Scan-frame tracking of the DR-SPAAM detections, the motion gate and its re-seeding. |
 | test/test_person_gating.py                                             | Unit tests for the detection gate; run without a ROS graph.          |
+| test/test_object_gating.py                                             | Unit tests for the fetch detector's gate; run without a ROS graph.   |
+| test/test_ball_locating.py                                             | Unit tests for the ball geometry and its tracker; run without a ROS graph. |
 | test/test_person_tracking.py                                           | Unit tests for the map-frame tracker; run without a ROS graph.       |
+| test/test_lidar_tracking.py                                            | Unit tests for the DR-SPAAM tracker; run without ROS, torch or `dr_spaam`. |
 | launch/mecanumbot_peopledetect.launch.py                               | Launches the people-detection pipeline with shared parameters.       |
 | config/lidar_peopledetect_config.yaml                                  | Runtime ROS parameters for node topics and thresholds.               |
 | models/dr_spaam_5_on_frog.pth                                          | DR-SPAAM pretrained weights used by the LiDAR detector.              |
@@ -716,9 +1037,21 @@ source install/setup.bash
 # whole people-detection pipeline
 ros2 launch mecanumbot_sensorprocess_smart mecanumbot_peopledetect.launch.py
 
+# ... with the fetch detector instead of the pose one, so balls are found too
+ros2 launch mecanumbot_sensorprocess_smart mecanumbot_peopledetect.launch.py detector:=fetch
+
 # individual nodes
 ros2 run mecanumbot_sensorprocess_smart mecanumbot_onboard_cam_detect_people
+ros2 run mecanumbot_sensorprocess_smart mecanumbot_onboard_cam_detect_objects
 ros2 run mecanumbot_sensorprocess_smart mecanumbot_detect_tennis
+```
+
+Checking the fetch detector and the located ball:
+
+```bash
+ros2 topic echo /mecanumbot/cam_ball_boxes
+ros2 topic echo /mecanumbot/ball_detections     # what the fetch tree reads
+ros2 topic echo /mecanumbot/ball_fusion         # the same, as poses, for rviz
 ```
 
 Checking the ROS4HRI output of the DeepStream node:
@@ -728,7 +1061,7 @@ ros2 topic echo /humans/bodies/tracked
 ros2 topic echo /humans/bodies/<id>/skeleton2d
 ```
 
-ROS packages are declared in `package.xml` (including `hri_msgs`), so `rosdep` covers
-them. The plain-Python and NVIDIA dependencies (`torch`, `ultralytics`, `opencv-python`,
+ROS packages are declared in `package.xml` (including `hri_msgs` and `vision_msgs`), so
+`rosdep` covers them. The plain-Python and NVIDIA dependencies (`torch`, `ultralytics`, `opencv-python`,
 `scipy`, `filterpy`, `transforms3d`, `dr_spaam`, and `pyds`/`gi` for the DeepStream node)
 are not, so those still have to be installed by hand.

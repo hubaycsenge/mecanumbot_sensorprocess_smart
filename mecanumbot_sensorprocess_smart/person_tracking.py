@@ -53,10 +53,33 @@ carries a person through a run of camera rejections - but only for
 track is dropped. Coasting is memory, not belief: it must not turn a person who
 left into a permanent phantom.
 
+The blind zone
+--------------
+
+That rule has one exception, and it is the close-range case the leading
+experiment runs into. Demanding corroboration only makes sense where the camera
+could have supplied it. The camera sits on the head at about 0.22 m with a
+~36 degree vertical field of view, so a person nearer than roughly a metre has
+nothing in frame the pose network can call a body, and a person outside the
+horizontal field of view is not in the picture at all. In neither case is the
+camera's silence evidence that nobody is there - it is evidence of nothing.
+
+So a track the camera *cannot* be expected to see does not accrue
+uncorroborated time, and a consistent run of LiDAR-only measurements there may
+also *create* one, which the ordinary rule forbids. What keeps that honest is
+that the exemption is bounded on three sides: it applies only inside a
+geometrically defined blind zone (:class:`CameraCoverage`), the LiDAR has to
+keep measuring - ``max_coast_time`` is unchanged, so a track with no
+measurement at all still dies in about a second - and it stops being reported
+after ``max_blind_zone_time`` whatever the geometry says. A person who walks
+away stops being detected and expires; a person standing half a metre from the
+robot does not.
+
 No ROS, no message types: everything here is plain floats and numpy, so it is
 unit-testable on a development machine.
 """
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -76,6 +99,54 @@ class Measurement:
     x: float
     y: float
     corroborated: bool = True
+
+
+@dataclass(frozen=True)
+class CameraCoverage:
+    """Where the camera is, and where it could see a person if one were there.
+
+    Pose is the camera frame's position and yaw in the map, i.e. the head, not
+    the base: the head turns, and a person behind the robot's body may be
+    squarely in front of its camera.
+
+    The two exemptions are separate because they fail for different reasons and
+    an experiment may want only one of them:
+
+    * ``exempt_close_range`` - nearer than ``blind_range`` the *vertical* field
+      of view has run out. At 0.6 m a camera at 0.22 m looking through ~36
+      degrees sees the world from the floor to about 0.4 m, which is a pair of
+      calves; below that there is not enough of a person in frame for any gate
+      to accept, however it is tuned.
+    * ``exempt_outside_fov`` - beyond ``half_fov`` off the camera axis the
+      person is not in the picture at all. This is the one that matters while
+      the robot is leading, because the human it is leading spends most of the
+      run behind it.
+
+    Both are statements about the *sensor*, not about the person, which is what
+    makes them safe to act on: they say the camera had nothing to contribute
+    here, so its silence must not be counted as disagreement.
+    """
+
+    x: float
+    y: float
+    yaw: float
+    blind_range: float = 0.9
+    half_fov: float = 0.52
+    exempt_close_range: bool = True
+    exempt_outside_fov: bool = True
+
+    def cannot_see(self, x, y):
+        """Say whether a person at ``(x, y)`` would be invisible to the camera."""
+        dx = float(x) - self.x
+        dy = float(y) - self.y
+        if self.exempt_close_range and math.hypot(dx, dy) <= self.blind_range:
+            return True
+        if self.exempt_outside_fov:
+            bearing = math.atan2(dy, dx) - self.yaw
+            bearing = (bearing + math.pi) % (2.0 * math.pi) - math.pi
+            if abs(bearing) > self.half_fov:
+                return True
+        return False
 
 
 @dataclass(frozen=True)
@@ -103,6 +174,27 @@ class TrackerConfig:
     # screenshots show: the person is plainly there and the LiDAR sees them,
     # but the pose network cannot make a skeleton out of a long skirt.
     max_uncorroborated_time: float = 4.0
+
+    # How long a track survives inside the camera's blind zone, where
+    # `max_uncorroborated_time` is held rather than spent. This is the outer
+    # bound on the exemption: past it the camera has to agree again whatever
+    # the geometry says, so a mis-detected chair leg beside the robot cannot
+    # become a permanent person. Generous, because the case it is sized for is
+    # a human walking at the robot's shoulder for a whole leading trial.
+    max_blind_zone_time: float = 30.0
+
+    # Consecutive LiDAR-only measurements, taken where the camera could not
+    # have seen anything, that confirm a track the camera never vouched for.
+    # Deliberately higher than `min_hits`: this is the one path by which the
+    # LiDAR alone may assert a person, so it has to be paid for in
+    # consistency. At the 10 Hz publish rate five hits is half a second.
+    blind_zone_min_hits: int = 5
+
+    # Whether an uncorroborated measurement in the blind zone may *create* a
+    # track, as opposed to only sustaining one. False keeps the original rule
+    # -- only the camera introduces a person -- while still holding the
+    # corroboration clock for tracks that already exist.
+    blind_zone_creates_tracks: bool = True
 
     # Measurement noise, in metres. The range comes from a percentile over a
     # scan wedge, so it is biased and coarse rather than gaussian; 0.25 m is
@@ -132,8 +224,10 @@ class PersonTrack:
         "kf",
         "hits",
         "corroborated_hits",
+        "blind_hits",
         "time_since_update",
         "time_since_corroboration",
+        "time_in_blind_zone",
         "_cfg",
     )
 
@@ -162,8 +256,14 @@ class PersonTrack:
 
         self.hits = 1
         self.corroborated_hits = 1 if measurement.corroborated else 0
+        # Uncorroborated hits taken where the camera could not have seen the
+        # person. Reset by any measurement the camera *could* have vouched for
+        # and did not, so it counts consistency in the blind zone rather than
+        # accumulating over a whole run.
+        self.blind_hits = 0 if measurement.corroborated else 1
         self.time_since_update = 0.0
         self.time_since_corroboration = 0.0
+        self.time_in_blind_zone = 0.0
 
     @property
     def position(self):
@@ -183,30 +283,79 @@ class PersonTrack:
         return vx, vy
 
     @property
-    def confirmed(self):
-        """Say whether this track has enough camera evidence to be published."""
-        return self.corroborated_hits >= self._cfg.min_hits
+    def blind_exhausted(self):
+        """Say whether this track has spent too long unable to be checked.
 
-    def predict(self, dt):
-        """Advance the motion model by `dt` seconds and return the prediction."""
+        The outer bound on the exemption. Note that it *silences* a track
+        rather than deleting it: an expired one would be re-created by the very
+        next LiDAR return in the same spot and confirmed all over again, which
+        is no bound at all. Silenced, it goes on absorbing those returns - so
+        no replacement is spawned - and ends when the LiDAR stops seeing
+        anything there, or comes back the moment the camera can vouch for it.
+        """
+        return self.time_in_blind_zone > self._cfg.max_blind_zone_time
+
+    @property
+    def confirmed(self):
+        """Say whether this track has enough evidence to be published.
+
+        Either the camera vouched for it `min_hits` times, or the LiDAR did so
+        `blind_zone_min_hits` times somewhere the camera could not have looked
+        - and in neither case has the blind-zone budget run out.
+        """
+        if self.blind_exhausted:
+            return False
+        if self.corroborated_hits >= self._cfg.min_hits:
+            return True
+        return self.blind_hits >= self._cfg.blind_zone_min_hits
+
+    def predict(self, dt, camera_blind=False):
+        """Advance the motion model by `dt` seconds and return the prediction.
+
+        `camera_blind` says the camera could not have seen this person over the
+        interval just elapsed. The corroboration clock is then held instead of
+        advanced - the camera is not disagreeing, it is absent - and the time
+        spent that way is charged to `max_blind_zone_time` instead.
+        """
         self.kf.F[0, 2] = dt
         self.kf.F[1, 3] = dt
         self.kf.predict()
         self.time_since_update += dt
-        self.time_since_corroboration += dt
+        if camera_blind:
+            self.time_in_blind_zone += dt
+        else:
+            self.time_since_corroboration += dt
         return self.position
 
-    def update(self, measurement):
-        """Fold one measurement into the estimate."""
+    def update(self, measurement, camera_blind=False):
+        """Fold one measurement into the estimate.
+
+        `camera_blind` is what separates the two kinds of uncorroborated
+        measurement. One taken where the camera was looking is the camera
+        declining to agree, and it clears the blind-zone evidence; one taken
+        where the camera is blind is the only evidence available, and it counts.
+        """
         self.kf.update(np.array([measurement.x, measurement.y]).reshape(2, 1))
         self.time_since_update = 0.0
         self.hits += 1
         if measurement.corroborated:
             self.corroborated_hits += 1
             self.time_since_corroboration = 0.0
+            self.time_in_blind_zone = 0.0
+        elif camera_blind:
+            self.blind_hits += 1
+        else:
+            self.blind_hits = 0
 
     def expired(self, cfg):
-        """Say whether this track has run out of both coasting and corroboration."""
+        """Say whether this track has run out of coasting or of corroboration.
+
+        `max_coast_time` is what stops the blind-zone exemption becoming a
+        phantom: whatever the camera geometry says, a track that nothing is
+        measuring at all still dies in about a second. The third budget,
+        `max_blind_zone_time`, is not an expiry - see
+        :attr:`blind_exhausted` for why it silences instead.
+        """
         if self.time_since_update > cfg.max_coast_time:
             return True
         return self.time_since_corroboration > cfg.max_uncorroborated_time
@@ -263,7 +412,7 @@ class PersonTracker:
         ]
         return matches, unmatched
 
-    def step(self, measurements, now):
+    def step(self, measurements, now, camera=None):
         """Advance every track to `now` and fold in this round's measurements.
 
         Args:
@@ -271,6 +420,10 @@ class PersonTracker:
                 coasting case and the whole reason this class exists.
             now: seconds on a monotonic clock. Only differences matter, but
                 they must be differences on the *same* clock.
+            camera: a :class:`CameraCoverage` for where the camera is pointing
+                now, or None. None means "assume the camera could have seen
+                everything", which is the original behaviour: every
+                uncorroborated measurement then counts against the track.
 
         Returns:
             The confirmed tracks, as a list of :class:`PersonTrack`.
@@ -278,20 +431,39 @@ class PersonTracker:
         dt = 0.0 if self._last_step is None else max(0.0, now - self._last_step)
         self._last_step = now
 
+        # Blind status is read off each track's *previous* estimate, before the
+        # motion model moves it. The two differ by one step of a walking pace,
+        # which is far inside the blind radius, and taking it beforehand keeps
+        # the decision independent of the prediction it is about to justify.
+        blind = [self._is_blind(camera, track.position) for track in self._tracks]
+
         predictions = np.array(
-            [track.predict(dt) for track in self._tracks], dtype=float
+            [
+                track.predict(dt, camera_blind)
+                for track, camera_blind in zip(self._tracks, blind)
+            ],
+            dtype=float,
         ).reshape(-1, 2)
 
         matches, unmatched = self._associate(list(measurements), predictions)
         for track_index, measurement_index in matches:
-            self._tracks[track_index].update(measurements[measurement_index])
+            self._tracks[track_index].update(
+                measurements[measurement_index], blind[track_index]
+            )
 
         for index in unmatched:
             measurement = measurements[index]
-            # An uncorroborated measurement that matched nothing is just a leg-
-            # sized LiDAR return. Only the camera is allowed to assert that
-            # something previously unseen is a person.
-            if not measurement.corroborated:
+            # An uncorroborated measurement that matched nothing is usually just
+            # a leg-sized LiDAR return, and only the camera may assert that
+            # something previously unseen is a person. The exception is a return
+            # from inside the blind zone: there the camera was never going to
+            # corroborate anything, so refusing to start a track means refusing
+            # to see anyone standing close. Such a track still has to earn
+            # `blind_zone_min_hits` before it is published.
+            if not measurement.corroborated and not (
+                self._cfg.blind_zone_creates_tracks
+                and self._is_blind(camera, (measurement.x, measurement.y))
+            ):
                 continue
             self._tracks.append(PersonTrack(measurement, self._next_id, self._cfg))
             self._next_id += 1
@@ -300,6 +472,13 @@ class PersonTracker:
             track for track in self._tracks if not track.expired(self._cfg)
         ]
         return self.confirmed_tracks()
+
+    @staticmethod
+    def _is_blind(camera, position):
+        """Say whether the camera could have seen a person at `position`."""
+        if camera is None:
+            return False
+        return camera.cannot_see(position[0], position[1])
 
     def confirmed_tracks(self):
         """Return the tracks with enough camera evidence to be published."""

@@ -49,6 +49,7 @@ setup(
             "mecanumbot_lidar_detect_people = mecanumbot_sensorprocess_smart.mecanumbot_lidar_detect_people:main",
             "mecanumbot_cam_detect_people = mecanumbot_sensorprocess_smart.mecanumbot_cam_detect_people:main",
             "mecanumbot_onboard_cam_detect_people = mecanumbot_sensorprocess_smart.mecanumbot_onboard_cam_detect_people:main",
+            "mecanumbot_onboard_cam_detect_objects = mecanumbot_sensorprocess_smart.mecanumbot_onboard_cam_detect_objects:main",
             "mecanumbot_locate_detections = mecanumbot_sensorprocess_smart.mecanumbot_locate_detections:main",
             "mecanumbot_detect_tennis = mecanumbot_sensorprocess_smart.mecanumbot_detect_tennis:main",
         ],

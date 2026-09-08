@@ -26,12 +26,12 @@ import tf2_geometry_msgs
 
 # Removed interp1d, using pure numpy indexing for speed
 from scipy.ndimage import median_filter, binary_dilation
-from scipy.optimize import linear_sum_assignment
-from filterpy.kalman import KalmanFilter
 
 import torch
 from dr_spaam.detector import Detector
 from ament_index_python.packages import get_package_share_directory
+
+from mecanumbot_sensorprocess_smart.lidar_tracking import MultiObjectTracker
 
 # ---- 1. Determine Device Dynamically ----
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -45,124 +45,6 @@ np.bool = bool
 
 def processor_load(path, *args, **kwargs):
     return _original_torch_load(path, map_location=DEVICE)
-
-
-class Track:
-    """Represents a single tracked person."""
-
-    def __init__(self, detection, track_id):
-        self.track_id = track_id
-        self.kf = KalmanFilter(dim_x=4, dim_z=2)
-        self.kf.x = np.array([detection[0], detection[1], 0.0, 0.0]).reshape(4, 1)
-
-        # F is rebuilt on every predict() from the measured time step, because the
-        # network no longer runs once per scan: the interval between two tracker
-        # updates depends on the inference rate cap, not on the LiDAR rate.
-        self.kf.F = np.eye(4)
-
-        self.kf.H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]])
-
-        self.kf.P *= 10.0
-        self.kf.R *= 0.5
-        self.kf.Q *= 0.01
-
-        self.time_since_update = 0.0
-        self.hits = 1
-        self.has_moved = False
-        self.speed_thresh = 0.1
-
-    def predict(self, dt):
-        self.kf.F[0, 2] = dt
-        self.kf.F[1, 3] = dt
-        self.kf.predict()
-        self.time_since_update += dt
-        return self.kf.x[:2].reshape(-1)
-
-    def update(self, detection):
-        self.kf.update(detection.reshape(2, 1))
-        self.time_since_update = 0.0
-        self.hits += 1
-
-        vx = self.kf.x[2, 0]
-        vy = self.kf.x[3, 0]
-        speed = np.hypot(vx, vy)
-
-        if speed > self.speed_thresh:
-            self.has_moved = True
-
-
-class MultiObjectTracker:
-    """Manages all active tracks and matches new detections.
-
-    Ages tracks in seconds rather than in frames so that the behaviour does not
-    change when the detector runs at a lower rate than the LiDAR.
-    """
-
-    def __init__(self, max_distance=0.5, max_missed_time=0.4, min_hits=2):
-        self.max_distance = max_distance
-        self.max_missed_time = max_missed_time
-        self.min_hits = min_hits
-        self.tracks = []
-        self.next_id = 0
-
-    def _confirmed_positions(self):
-        valid_positions = [
-            t.kf.x[:2].reshape(-1)
-            for t in self.tracks
-            if t.hits >= self.min_hits and t.has_moved
-        ]
-        return (
-            np.array(valid_positions) if len(valid_positions) > 0 else np.empty((0, 2))
-        )
-
-    def predict_only(self, dt):
-        """Advance the motion model without a measurement.
-
-        Used on scans where the detector was skipped, so that the published
-        detections keep moving at LiDAR rate instead of freezing between
-        inferences.
-        """
-        for track in self.tracks:
-            track.predict(dt)
-        self.tracks = [
-            t for t in self.tracks if t.time_since_update <= self.max_missed_time
-        ]
-        return self._confirmed_positions()
-
-    def update(self, detections, dt):
-        if len(self.tracks) == 0:
-            predicted_positions = np.empty((0, 2))
-        else:
-            predicted_positions = np.array([track.predict(dt) for track in self.tracks])
-
-        matched_indices = []
-        unmatched_detections = list(range(len(detections)))
-        unmatched_tracks = list(range(len(self.tracks)))
-
-        if len(self.tracks) > 0 and len(detections) > 0:
-            cost_matrix = np.linalg.norm(
-                predicted_positions[:, None, :] - detections[None, :, :], axis=2
-            )
-            track_indices, det_indices = linear_sum_assignment(cost_matrix)
-
-            for t_idx, d_idx in zip(track_indices, det_indices):
-                if cost_matrix[t_idx, d_idx] < self.max_distance:
-                    matched_indices.append((t_idx, d_idx))
-                    unmatched_detections.remove(d_idx)
-                    unmatched_tracks.remove(t_idx)
-
-        for t_idx, d_idx in matched_indices:
-            self.tracks[t_idx].update(detections[d_idx])
-
-        for d_idx in unmatched_detections:
-            self.tracks.append(Track(detections[d_idx], self.next_id))
-            self.next_id += 1
-
-        self.tracks = [
-            t for t in self.tracks if t.time_since_update <= self.max_missed_time
-        ]
-
-        return self._confirmed_positions()
 
 
 class DrSpaamNode(Node):
@@ -196,6 +78,18 @@ class DrSpaamNode(Node):
         self.declare_parameter("track_max_distance", 0.5)
         self.declare_parameter("track_max_missed_time", 0.4)
         self.declare_parameter("track_min_hits", 2)
+        # A track is only published once it has been seen moving, which is what
+        # keeps table legs and door frames out of `dets`. Close to the robot
+        # that gate misfires: the two legs of a person standing half a metre
+        # away resolve as one blob and then two, the track is dropped and
+        # replaced, and the replacement has no motion of its own to show. A
+        # dropped track therefore leaves its motion evidence behind for
+        # `track_reseed_memory` seconds, for a new track within
+        # `track_reseed_distance` to inherit. Set `track_require_motion` false
+        # to publish stationary people outright, at the cost of the furniture.
+        self.declare_parameter("track_require_motion", True)
+        self.declare_parameter("track_reseed_memory", 1.5)
+        self.declare_parameter("track_reseed_distance", 0.5)
 
         self.weight_file = self.get_parameter("weight_file").value
         self.conf_thresh = self.get_parameter("conf_thresh").value
@@ -263,6 +157,9 @@ class DrSpaamNode(Node):
             max_distance=float(self.get_parameter("track_max_distance").value),
             max_missed_time=float(self.get_parameter("track_max_missed_time").value),
             min_hits=int(self.get_parameter("track_min_hits").value),
+            require_motion=bool(self.get_parameter("track_require_motion").value),
+            reseed_memory=float(self.get_parameter("track_reseed_memory").value),
+            reseed_distance=float(self.get_parameter("track_reseed_distance").value),
         )
 
         # Inference scheduling / perf bookkeeping

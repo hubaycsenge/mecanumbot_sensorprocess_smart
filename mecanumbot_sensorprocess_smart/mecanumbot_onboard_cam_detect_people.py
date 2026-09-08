@@ -21,6 +21,7 @@ import math
 import transforms3d as t3d
 from ament_index_python.packages import get_package_share_directory
 
+from mecanumbot_sensorprocess_smart import nvinfer_config
 from mecanumbot_sensorprocess_smart.ros4hri_bridge import (
     BodyIdTracker,
     Ros4HriBodyBroadcaster,
@@ -221,10 +222,10 @@ class DeepStreamPersonDetectNode(Node):
         self.mux.set_property("batched-push-timeout", 40000)
 
         self.nvinfer = Gst.ElementFactory.make("nvinfer", "primary-inference")
-        nvinfer_config = self._render_nvinfer_config()
-        self.nvinfer.set_property("config-file-path", nvinfer_config)
-        self._resolve_keypoint_scaling(nvinfer_config)
-        self.network_input_size = self._read_infer_dims(nvinfer_config)
+        rendered_config = self._render_nvinfer_config()
+        self.nvinfer.set_property("config-file-path", rendered_config)
+        self._resolve_keypoint_scaling(rendered_config)
+        self.network_input_size = self._read_infer_dims(rendered_config)
         self._announced_frame_size = False
         self._announced_network_size = False
         self._warned_network_size = False
@@ -474,10 +475,9 @@ class DeepStreamPersonDetectNode(Node):
         model_name = str(self.get_parameter("model_params.model_name").value)
         precision = str(self.get_parameter("model_params.precision").value)
 
-        onnx = os.path.join(
-            models_dir, "imgsz_{}".format(imgsz), "{}.onnx".format(model_name)
+        onnx, engine = nvinfer_config.model_paths(
+            models_dir, imgsz, model_name, precision
         )
-        engine = "{}_b1_gpu0_{}.engine".format(onnx, precision)
         if not os.path.isfile(onnx):
             self.get_logger().error(
                 f"No ONNX at {onnx}. model_params.imgsz={imgsz} selects "
@@ -530,27 +530,6 @@ class DeepStreamPersonDetectNode(Node):
         if custom_lib:
             substitutions["custom-lib-path"] = custom_lib
 
-        try:
-            with open(template, "r") as handle:
-                lines = handle.readlines()
-        except OSError as exc:
-            self.get_logger().error(f"Could not read {template}: {exc}")
-            return template
-
-        rendered_lines = []
-        for line in lines:
-            key = line.split("=", 1)[0].strip() if "=" in line else ""
-            if key in substitutions:
-                rendered_lines.append("{}={}\n".format(key, substitutions.pop(key)))
-            else:
-                rendered_lines.append(line)
-        # Keys the template does not carry at all still have to reach nvinfer.
-        if substitutions:
-            rendered_lines.append("# added by mecanumbot_onboard_cam_detect_people\n")
-            rendered_lines.extend(
-                "{}={}\n".format(key, value) for key, value in substitutions.items()
-            )
-
         rendered = os.path.join(
             tempfile.gettempdir(),
             "mecanumbot_nvinfer_{}_imgsz{}.txt".format(
@@ -558,11 +537,11 @@ class DeepStreamPersonDetectNode(Node):
             ),
         )
         try:
-            with open(rendered, "w") as handle:
-                handle.writelines(rendered_lines)
+            nvinfer_config.render_config(template, substitutions, rendered)
         except OSError as exc:
             self.get_logger().error(
-                f"Could not write {rendered}: {exc}; using {template} unchanged."
+                f"Could not render {template} to {rendered}: {exc}; using the "
+                "template unchanged."
             )
             return template
 
@@ -577,7 +556,7 @@ class DeepStreamPersonDetectNode(Node):
             )
         return rendered
 
-    def _resolve_keypoint_scaling(self, nvinfer_config):
+    def _resolve_keypoint_scaling(self, config_path):
         """Pick the inverse of the pre-processing letterbox/stretch nvinfer applies.
 
         Keypoints come out of the parser in network-input coordinates, so mapping
@@ -598,13 +577,10 @@ class DeepStreamPersonDetectNode(Node):
 
         maintain_aspect_ratio = None
         try:
-            with open(nvinfer_config, "r") as config_file:
-                for line in config_file:
-                    line = line.split("#", 1)[0].strip()
-                    if line.startswith("maintain-aspect-ratio"):
-                        maintain_aspect_ratio = int(line.split("=", 1)[1].strip())
+            raw = nvinfer_config.read_setting(config_path, "maintain-aspect-ratio")
+            maintain_aspect_ratio = None if raw is None else int(raw)
         except (OSError, ValueError) as exc:
-            self.get_logger().warn(f"Could not read {nvinfer_config}: {exc}")
+            self.get_logger().warn(f"Could not read {config_path}: {exc}")
 
         if maintain_aspect_ratio is None:
             self.get_logger().warn(
@@ -619,7 +595,7 @@ class DeepStreamPersonDetectNode(Node):
                 f"(maintain-aspect-ratio={maintain_aspect_ratio})"
             )
 
-    def _read_infer_dims(self, nvinfer_config):
+    def _read_infer_dims(self, config_path):
         """
         Return the configured network input as (width, height), or None.
 
@@ -628,16 +604,10 @@ class DeepStreamPersonDetectNode(Node):
         value is announced from the first inferred frame instead.
         """
         try:
-            with open(nvinfer_config, "r") as config_file:
-                for line in config_file:
-                    line = line.split("#", 1)[0].strip()
-                    if line.startswith("infer-dims"):
-                        # DeepStream spells this channels;height;width.
-                        dims = line.split("=", 1)[1].strip().split(";")
-                        return (int(dims[2]), int(dims[1]))
+            return nvinfer_config.read_infer_dims(config_path)
         except (OSError, ValueError, IndexError) as exc:
             self.get_logger().warn(
-                f"Could not read infer-dims from {nvinfer_config}: {exc}"
+                f"Could not read infer-dims from {config_path}: {exc}"
             )
         return None
 

@@ -12,6 +12,7 @@ import math
 import pytest
 
 from mecanumbot_sensorprocess_smart.person_tracking import (
+    CameraCoverage,
     Measurement,
     PersonTracker,
     TrackerConfig,
@@ -19,6 +20,9 @@ from mecanumbot_sensorprocess_smart.person_tracking import (
 )
 
 CONFIG = TrackerConfig()
+
+#: A camera at the origin looking down +x, with the defaults the node ships.
+CAMERA = CameraCoverage(x=0.0, y=0.0, yaw=0.0)
 
 
 def confirmed(tracker, measurements, now):
@@ -121,6 +125,159 @@ class TestCoasting:
             now += 0.1
             tracker.step(lidar_at(2.4, 0.0), now)
         assert len(tracker.confirmed_tracks()) == 1
+
+
+class TestBlindZone:
+    """The close-range case: the camera is not disagreeing, it is absent.
+
+    Every test here is a claim about the *sensor*. The exemption is only ever
+    justified by the camera being unable to see the point in question, so each
+    one pairs the relaxed behaviour inside the blind zone with the unchanged
+    behaviour just outside it.
+    """
+
+    def near(self, tracker, now, x=0.5, y=0.0):
+        """One LiDAR-only measurement inside the blind range."""
+        return tracker.step(lidar_at(x, y), now, CAMERA)
+
+    def test_the_camera_cannot_see_someone_standing_on_top_of_it(self):
+        assert CAMERA.cannot_see(0.5, 0.0)
+        assert not CAMERA.cannot_see(3.0, 0.0)
+
+    def test_the_camera_cannot_see_behind_itself(self):
+        # The person being led walks behind the robot for most of a trial.
+        assert CAMERA.cannot_see(-3.0, 0.0)
+        assert CAMERA.cannot_see(3.0, 3.0)
+
+    def test_each_exemption_can_be_switched_off_alone(self):
+        range_only = CameraCoverage(0.0, 0.0, 0.0, exempt_outside_fov=False)
+        assert range_only.cannot_see(0.5, 0.0)
+        assert not range_only.cannot_see(-3.0, 0.0)
+
+        fov_only = CameraCoverage(0.0, 0.0, 0.0, exempt_close_range=False)
+        assert not fov_only.cannot_see(0.5, 0.0)
+        assert fov_only.cannot_see(-3.0, 0.0)
+
+    def test_consistent_lidar_alone_is_a_person_in_the_blind_zone(self):
+        # The repair the leading experiment needs: nobody is ever going to
+        # corroborate a detection half a metre from a shin-height camera.
+        tracker = PersonTracker(CONFIG)
+        for step in range(CONFIG.blind_zone_min_hits + 1):
+            self.near(tracker, step * 0.1)
+        assert len(tracker.confirmed_tracks()) == 1
+
+    def test_one_or_two_returns_are_not_yet_a_person(self):
+        # It is paid for in consistency: `blind_zone_min_hits` is deliberately
+        # higher than the corroborated `min_hits`.
+        tracker = PersonTracker(CONFIG)
+        for step in range(CONFIG.min_hits + 1):
+            self.near(tracker, step * 0.1)
+        assert tracker.confirmed_tracks() == []
+
+    def test_lidar_alone_still_never_creates_a_person_where_the_camera_looks(self):
+        # The original rule, unchanged, everywhere the camera had a chance.
+        tracker = PersonTracker(CONFIG)
+        for step in range(20):
+            tracker.step(lidar_at(3.0, 0.0), step * 0.1, CAMERA)
+        assert tracker.confirmed_tracks() == []
+
+    def test_creation_can_be_switched_off_without_losing_the_clock_hold(self):
+        cfg = TrackerConfig(blind_zone_creates_tracks=False)
+        tracker = PersonTracker(cfg)
+        for step in range(20):
+            tracker.step(lidar_at(0.5, 0.0), step * 0.1, CAMERA)
+        assert tracker.track_count == 0
+
+    def test_a_person_close_by_outlives_the_uncorroborated_budget(self):
+        # The actual failure: the subject walks up to the robot and stays
+        # there. Before the exemption they vanished after
+        # `max_uncorroborated_time` and could not come back, because at that
+        # range the camera never agrees again.
+        tracker = PersonTracker(CONFIG)
+        tracker.step(seen_at(2.0, 0.0), 0.0, CAMERA)
+        tracker.step(seen_at(2.0, 0.0), 0.1, CAMERA)
+        now = 0.1
+        while now < CONFIG.max_uncorroborated_time * 3:
+            now += 0.1
+            tracker.step(lidar_at(0.5, 0.0), now, CAMERA)
+        assert len(tracker.confirmed_tracks()) == 1
+
+    def test_the_same_person_is_lost_where_the_camera_could_have_seen_them(self):
+        # The control for the test above: identical, except the person stands
+        # where the camera is looking, so its silence is real disagreement.
+        tracker = PersonTracker(CONFIG)
+        tracker.step(seen_at(2.0, 0.0), 0.0, CAMERA)
+        tracker.step(seen_at(2.0, 0.0), 0.1, CAMERA)
+        now = 0.1
+        while now < CONFIG.max_uncorroborated_time * 3:
+            now += 0.1
+            tracker.step(lidar_at(2.0, 0.0), now, CAMERA)
+        assert tracker.confirmed_tracks() == []
+
+    def test_walking_away_still_ends_the_track(self):
+        # Coasting is memory, not belief, and the blind zone does not change
+        # that: `max_coast_time` is untouched, so a track nothing is measuring
+        # dies on schedule however blind the camera is.
+        tracker = PersonTracker(CONFIG)
+        for step in range(CONFIG.blind_zone_min_hits + 1):
+            self.near(tracker, step * 0.1)
+        now = CONFIG.blind_zone_min_hits * 0.1
+        tracker.step([], now + CONFIG.max_coast_time + 0.1, CAMERA)
+        assert tracker.confirmed_tracks() == []
+
+    def test_the_exemption_itself_runs_out(self):
+        # The outer bound. A leg-sized return beside the robot that the camera
+        # never vouches for must not become a permanent person.
+        tracker = PersonTracker(CONFIG)
+        now = 0.0
+        while now < CONFIG.max_blind_zone_time + 1.0:
+            self.near(tracker, now)
+            now += 0.1
+        assert tracker.confirmed_tracks() == []
+
+    def test_a_silenced_track_comes_back_the_moment_the_camera_can_check(self):
+        # Silencing is not deletion: the track goes on absorbing the LiDAR
+        # returns, so one corroborated frame restores the person rather than
+        # starting the acquisition from scratch.
+        tracker = PersonTracker(CONFIG)
+        now = 0.0
+        while now < CONFIG.max_blind_zone_time + 1.0:
+            self.near(tracker, now)
+            now += 0.1
+        assert tracker.confirmed_tracks() == []
+        assert tracker.track_count == 1
+
+        now += 0.1
+        tracker.step(seen_at(0.5, 0.0), now, CAMERA)
+        assert len(tracker.confirmed_tracks()) == 1
+
+    def test_the_camera_agreeing_resets_the_blind_budget(self):
+        tracker = PersonTracker(CONFIG)
+        now = 0.0
+        while now < CONFIG.max_blind_zone_time - 1.0:
+            self.near(tracker, now)
+            now += 0.1
+        # They step back into view for one frame, then return to the blind zone.
+        now += 0.1
+        tracker.step(seen_at(0.5, 0.0), now, CAMERA)
+        for _ in range(20):
+            now += 0.1
+            self.near(tracker, now)
+        assert len(tracker.confirmed_tracks()) == 1
+
+    def test_without_a_camera_pose_nothing_is_exempt(self):
+        # A missing head transform must fail towards the stricter behaviour,
+        # not towards trusting the LiDAR everywhere.
+        tracker = PersonTracker(CONFIG)
+        for step in range(20):
+            tracker.step(lidar_at(0.5, 0.0), step * 0.1, None)
+        assert tracker.confirmed_tracks() == []
+
+    def test_the_zone_follows_the_head_not_the_map_origin(self):
+        camera = CameraCoverage(x=4.0, y=1.0, yaw=math.pi)
+        assert camera.cannot_see(4.3, 1.0)
+        assert camera.cannot_see(6.0, 1.0)
+        assert not camera.cannot_see(2.0, 1.0)
 
 
 class TestSmoothing:

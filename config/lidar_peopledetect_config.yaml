@@ -33,6 +33,21 @@ mecanumbot_lidar_detect_people:
     track_max_distance: 0.5
     track_max_missed_time: 0.4
     track_min_hits: 2
+    # A track is only published once it has been seen moving: a 2D LiDAR at
+    # ankle height sees table legs and door frames, DR-SPAAM calls some of them
+    # people, and almost none of them move. The flag is sticky per track, so a
+    # person who walks in and stops stays a person -- but only for as long as
+    # that track survives, and close to the robot it does not: two legs half a
+    # metre away resolve as one blob and then two, the track is dropped on
+    # track_max_missed_time and the replacement has no motion of its own to
+    # show. A dropped track therefore leaves its motion evidence behind for
+    # track_reseed_memory seconds for a new track within track_reseed_distance
+    # to inherit; the replacement still has to be seen track_min_hits times.
+    # Setting track_require_motion false publishes stationary detections
+    # outright, which also publishes the furniture.
+    track_require_motion: true
+    track_reseed_memory: 1.5
+    track_reseed_distance: 0.5
 
 mecanumbot_cam_detect_people_ds:
   ros__parameters:
@@ -209,3 +224,233 @@ mecanumbot_locate_detections:
       # m/s. Above this is an association error, not a person, so the reported
       # velocity is clamped rather than believed.
       max_reported_speed: 2.5
+
+      # ---- the camera's blind zone ----
+      # Requiring the camera to agree only makes sense where the camera could
+      # have agreed. It sits on the head at ~0.22 m with a ~36 deg vertical
+      # FOV, so a person closer than about a metre has nothing in frame that
+      # the pose network can call a body, and a person off to the side is not
+      # in the picture at all -- which is most of a leading trial, since the
+      # human being led walks behind the robot. In neither place is the
+      # camera's silence evidence that nobody is there, so a track there holds
+      # its max_uncorroborated_time instead of spending it, and a consistent
+      # run of LiDAR-only measurements may start one.
+      #
+      # The exemption is bounded on three sides: the geometry below, the
+      # unchanged max_coast_time (a track nothing is measuring still dies in
+      # ~1 s), and max_blind_zone_time. Set both exempt_* false to go back to
+      # demanding corroboration everywhere.
+      camera_frame: mecanumbot/head_link
+      exempt_close_range: true
+      exempt_outside_fov: true
+      # Metres from the camera within which there is not enough of a person in
+      # frame to detect, whatever the gate thresholds are.
+      camera_blind_range: 0.9
+      # Half the camera's horizontal FOV. 30 deg is the ~60 deg horizontal of
+      # the 16:9 frame whose vertical is the ~36 deg quoted above.
+      camera_half_fov_deg: 30.0
+      # Seconds a track may be reported on the exemption before the camera has
+      # to agree again regardless. Past it the track is silenced rather than
+      # dropped -- it keeps absorbing the LiDAR returns, so no replacement is
+      # spawned, and one corroborated frame brings the person straight back.
+      # Sized for a human walking at the robot's shoulder for a whole leading
+      # leg; lower it if a track outlives a person who left through the blind
+      # zone.
+      max_blind_zone_time: 30.0
+      # Consecutive LiDAR-only measurements inside the blind zone that confirm
+      # a track the camera never vouched for. Higher than min_hits on purpose:
+      # this is the only path by which the LiDAR alone asserts a person, so it
+      # is paid for in consistency. Five hits is half a second at 10 Hz.
+      blind_zone_min_hits: 5
+      # false keeps the original rule -- only the camera introduces a person --
+      # while still holding the corroboration clock for existing tracks.
+      blind_zone_creates_tracks: true
+
+    # ==========================================================================
+    # The camera, as this node has to model it
+    # ==========================================================================
+    # The pose detector publishes bearings and keeps its own copy of these; the
+    # fetch detector publishes boxes in pixels and leaves the conversion here,
+    # which is where the range has to be worked out anyway. So both nodes hold
+    # the same three numbers and nothing checks them against each other -- they
+    # never talk. A box arriving outside the declared frame is warned about
+    # once, which is the cheapest symptom of their having drifted apart.
+    camera_params:
+      camera_width: 1280
+      camera_height: 720
+      camera_fov: 1.0471975512   # 60 deg
+      # 0.0 derives the vertical field of view from the frame shape, assuming
+      # square pixels, which every camera on this robot has.
+      camera_vfov: 0.0
+
+    # ==========================================================================
+    # The fetch game's ball
+    # ==========================================================================
+    # The LiDAR cannot help here at all: it scans one horizontal plane about
+    # 0.12 m up and a tennis ball on the floor is never in it, so a range looked
+    # up inside the ball's bearing would be the range of the wall behind it.
+    # Both bearing and range come from the camera. See ball_locating.py.
+    ball:
+      enabled: true
+      boxes_topic: cam_ball_boxes
+      # The label the located ball is published under, on ball_detections. The
+      # fetch tree matches on this string.
+      class_id: sports ball
+      # How long a box message stays usable, as with the person bearings.
+      detection_timeout: 0.6
+      # ball_fusion is published on this timer rather than on arrival, so a
+      # behaviour can tell "no ball for a second" from "the detector has said
+      # nothing since the run started".
+      publish_rate: 10.0
+      # A regulation tennis ball [m]. Every apparent-size range scales with it.
+      diameter: 0.067
+
+      # Which estimator supplies the published range:
+      #   size          -- from the ball's apparent diameter. Needs only the
+      #                    lens, does not care where the camera points, and is
+      #                    the safe default because it depends on nothing that
+      #                    has to be measured on the robot.
+      #   ground_plane  -- where the ray meets the floor. Better close in, and
+      #                    the one to switch to once camera_z and
+      #                    camera_pitch_deg below have actually been measured.
+      range_source: size
+
+      # Where the camera sits in the robot's base frame [m], and where the floor
+      # is in it. These are NOT read from the URDF, and cannot be: head_link is
+      # rotated 90 deg about x and camera_link another 90 about y, so neither is
+      # an x-forward, z-up frame and neither gives the camera's height without
+      # unpicking two rotations written for the meshes. Measure them on the
+      # robot. base_link sits 0.01 m above base_footprint, so the floor is a
+      # centimetre below the base frame's origin.
+      camera_x: 0.13
+      camera_z: 0.21
+      # Positive looks UP. The neck tilts, so a tree that sweeps the head while
+      # searching either keeps this in step with the pose it commanded or stays
+      # on range_source: size, which does not care.
+      camera_pitch_deg: 0.0
+      floor_z: -0.01
+      # Nearer than the first the ball is under the camera's chin; further than
+      # the second the box is a few pixels and the 1/d_px error swamps it.
+      min_range: 0.15
+      max_range: 6.0
+      # Metres the two estimators may differ by before it is worth saying so.
+      # They measure the same distance by unrelated routes, so a persistent gap
+      # is evidence that camera_z, camera_pitch_deg or diameter is wrong --
+      # which nothing else can tell you, because each estimator on its own
+      # produces a perfectly plausible number from wrong inputs.
+      disagreement_warn: 0.6
+
+      # Alpha-beta smoothing in the map frame. Lighter than the person tracker
+      # on purpose: a ball is one cleanly-shaped unambiguous target with none of
+      # a crowd's association problems. What the filter is for is the range
+      # noise -- an apparent-size range goes as 1/d_px, so a pixel of box jitter
+      # at 4 m is about 20 cm -- and the frames where the ball is behind a chair
+      # leg.
+      tracking:
+        max_association_distance: 0.6
+        min_hits: 2
+        # Short: a ball that has been picked up should stop being reported
+        # quickly, or the robot keeps driving at the floor where it was.
+        max_coast_time: 1.0
+        position_gain: 0.5
+        velocity_gain: 0.12
+        max_speed: 3.0
+
+    # ---- person boxes from the fetch detector ----
+    # Its person boxes become the same bearing wedge a CamPersonDetection
+    # carries, which is all this node ever used of one. Harmless with both
+    # detectors running: the two wedges land on the same person and the
+    # tracker's association absorbs the duplicate.
+    person_boxes:
+      enabled: true
+      topic: cam_people_boxes
+
+# ==============================================================================
+# The fetch game's detector: one plain YOLO pass that finds people AND balls.
+# ==============================================================================
+# Runs *instead of* mecanumbot_cam_detect_objects_ds's pose sibling above, not
+# alongside it -- two networks on one camera stream is most of an Orin Nano's
+# GPU. The trade is explicit: this model gives up the skeletons (so no ostensive
+# gestures, and person detections are judged on the box alone) and gains a
+# second class, which is the only way a tennis ball is ever detected. Both
+# detectors feed the same `mecanumbot_locate_detections`, which accepts person
+# evidence in either form, so `people_fusion` keeps flowing whichever is up.
+mecanumbot_cam_detect_objects_ds:
+  ros__parameters:
+    # ---- the detection model ----
+    # Same folder-per-input-size layout as the pose model: imgsz picks
+    # models/imgsz_<n>/ and model_name the file in it. yolo26m is the COCO
+    # 80-class detector; conv_to_onnx.py exports it the same way as the pose
+    # checkpoints. 640 rather than 1280: a tennis ball is small, but the extra
+    # resolution costs more than it buys once the ball is close enough to be
+    # worth driving at, and this network runs alongside nothing.
+    model_params:
+      imgsz: 640
+      model_name: yolo26m
+      # fp16 | fp32 -- must match network-mode in the nvinfer config
+      # (fp16 -> 2, fp32 -> 0), since the precision is part of the engine name.
+      precision: fp16
+      # Empty means the package share models/ folder.
+      models_dir: ''
+      # Where DeepStream-Yolo (NOT DeepStream-Yolo-Pose -- a different library
+      # with a different parser) was built. Empty keeps the custom-lib-path
+      # written in config_infer_yolo26_det.txt.
+      custom_lib_path: ''
+      # A complete nvinfer config to hand to nvinfer untouched; setting it
+      # disables all of the substitution above.
+      nvinfer_config: ''
+
+    # ---- which classes, and what to call them ----
+    # COCO numbering, for the shipped model. A re-trained model renumbers them,
+    # which is why they are parameters; the labels are what travels downstream,
+    # because a numeric id means nothing once the detection has left the camera.
+    classes:
+      person_id: 0
+      person_label: person
+      person_topic: cam_people_boxes
+      ball_id: 32
+      ball_label: sports ball
+      ball_topic: cam_ball_boxes
+
+    # ---- the person gate ----
+    # There are no keypoints here to judge a person on, so what is left of the
+    # three-stage gate is hysteresis and temporal confirmation (see
+    # object_gating.py). The shape bounds are deliberately wide: a person close
+    # to the camera is wider than tall, and the work of not believing a coat
+    # rack is a person is done downstream, where the LiDAR has to agree there is
+    # something at that bearing.
+    person_gate:
+      conf_acquire: 0.5
+      conf_retain: 0.3
+      min_size: 20.0
+      min_aspect: 0.05
+      max_aspect: 2.5
+      min_hits: 2
+      max_missed_time: 0.5
+      iou_threshold: 0.3
+
+    # ---- the ball gate ----
+    # A tennis ball is round, so its box is square at every range and from every
+    # direction -- no other object in this system has that property, and the
+    # aspect bounds are the cheapest thing separating a ball from a yellow floor
+    # marking or a reflection. Not 1.0 +- nothing, because a ball in flight
+    # smears and a ball against a chair leg is clipped.
+    ball_gate:
+      # Lower than the person's: a ball is small, scores lower, and a false ball
+      # costs one wasted drive, where a false person costs a social act.
+      conf_acquire: 0.4
+      conf_retain: 0.25
+      # Pixels on the shorter side. At 640x480-equivalent geometry a ball at 5 m
+      # is about 15 px, so this is roughly "no further than the room is wide".
+      min_size: 6.0
+      min_aspect: 0.55
+      max_aspect: 1.8
+      min_hits: 2
+      max_missed_time: 0.4
+      iou_threshold: 0.2
+
+    # Draws every box, accepted or refused, with the check it failed, on
+    # cam_object_detections/debug_image/compressed. For tuning; costs a JPEG
+    # encode per frame.
+    debug_mode: false
+    log_rejections: false

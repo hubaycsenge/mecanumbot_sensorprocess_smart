@@ -1,3 +1,27 @@
+"""
+Placing what the cameras see, in the map frame.
+
+Two things are located here, and they are located differently because the
+sensors can say different things about them.
+
+**People** are a bearing plus a range from two sensors: the camera says which
+direction, the LiDAR says how far, and a Kalman estimate per person carries the
+result across the frames where one of the two is missing. That is the original
+job of this node and `person_tracking.py` explains it.
+
+**Balls** are the fetch game's target, and the LiDAR cannot help at all: it scans
+one horizontal plane about 0.12 m up and a tennis ball on the floor is never in
+it, so a range looked up inside the ball's bearing would be the range of the
+wall behind it. Both the bearing and the range therefore come from the camera --
+from the ball's apparent size, or from where its ray meets the floor. That
+geometry is `ball_locating.py`; what is here is the ROS end of it.
+
+The two paths share this node rather than getting one each because they share
+the transform, the clock and the camera geometry, and because a ball and a
+person are the same picture. They do not share a tracker: a crowd of people and
+a rolling ball are different association problems.
+"""
+
 import rclpy
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
@@ -14,6 +38,12 @@ from geometry_msgs.msg import (
 )
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from vision_msgs.msg import (
+    Detection2DArray,
+    Detection3D,
+    Detection3DArray,
+    ObjectHypothesisWithPose,
+)
 from tf2_geometry_msgs import do_transform_pose
 from nav_msgs.msg import OccupancyGrid
 from tf2_ros import TransformListener, Buffer
@@ -24,7 +54,9 @@ import threading
 import numpy as np
 import copy
 
+from mecanumbot_sensorprocess_smart import ball_locating
 from mecanumbot_sensorprocess_smart.person_tracking import (
+    CameraCoverage,
     PersonTracker,
     TrackerConfig,
     combine_measurements,
@@ -65,10 +97,104 @@ class PersonLocateNode(Node):
         self.declare_parameter("tracking.measurement_noise", 0.25)
         self.declare_parameter("tracking.process_noise", 0.08)
         self.declare_parameter("tracking.max_reported_speed", 2.5)
+        # --- the camera's blind zone ---
+        # Corroboration is only meaningful where the camera could have supplied
+        # it. Close to the robot the vertical field of view has run out and off
+        # to the side there is no picture at all, so in both places the camera's
+        # silence is absence of evidence, not evidence of absence, and a track
+        # there holds its corroboration clock instead of spending it.
+        self.declare_parameter("tracking.camera_frame", "mecanumbot/head_link")
+        self.declare_parameter("tracking.exempt_close_range", True)
+        self.declare_parameter("tracking.exempt_outside_fov", True)
+        self.declare_parameter("tracking.camera_blind_range", 0.9)
+        self.declare_parameter("tracking.camera_half_fov_deg", 30.0)
+        self.declare_parameter("tracking.max_blind_zone_time", 30.0)
+        self.declare_parameter("tracking.blind_zone_min_hits", 5)
+        self.declare_parameter("tracking.blind_zone_creates_tracks", True)
+
+        # ---- the camera, as this node has to model it ----
+        # The pose detector publishes bearings, having done the image -> angle
+        # conversion itself; the fetch detector publishes boxes in pixels and
+        # leaves the conversion here, which is where the range has to be worked
+        # out anyway. So this node needs the lens. These three MUST match the
+        # detector's own `camera_params`: they describe the same camera, and
+        # nothing checks that at startup because the two nodes never talk. A
+        # box arriving outside the declared frame is warned about once, which is
+        # the cheapest symptom of their having drifted apart.
+        self.declare_parameter("camera_params.camera_width", 1280)
+        self.declare_parameter("camera_params.camera_height", 720)
+        self.declare_parameter("camera_params.camera_fov", math.radians(60.0))
+        # 0.0 derives the vertical field of view from the frame shape, assuming
+        # square pixels.
+        self.declare_parameter("camera_params.camera_vfov", 0.0)
+
+        # ---- the fetch game's ball (see ball_locating.py) ----
+        self.declare_parameter("ball.enabled", True)
+        self.declare_parameter("ball.boxes_topic", "cam_ball_boxes")
+        # The label the located ball is published under. It has to be the
+        # detector's own name for the class, because that is what a consumer
+        # matches on -- the numeric class id belongs to whichever model was
+        # loaded and means nothing once the detection has left the camera.
+        self.declare_parameter("ball.class_id", "sports ball")
+        self.declare_parameter("ball.detection_timeout", 0.6)
+        self.declare_parameter("ball.publish_rate", 10.0)
+        # A regulation tennis ball. Change it for a different ball and every
+        # apparent-size range changes with it, proportionally.
+        self.declare_parameter("ball.diameter", ball_locating.TENNIS_BALL_DIAMETER)
+        # Which estimator supplies the published range: `size` (works with no
+        # mounting measurements at all) or `ground_plane` (better close in, once
+        # camera_z and camera_pitch_deg have actually been measured).
+        self.declare_parameter("ball.range_source", ball_locating.SOURCE_SIZE)
+        # Where the camera sits in the robot's base frame [m], and where the
+        # floor is in it. The URDF cannot be read for these: head_link and
+        # camera_link are each rotated 90 degrees for the meshes, so neither is
+        # an x-forward, z-up frame. Measure them on the robot.
+        self.declare_parameter("ball.camera_x", 0.13)
+        self.declare_parameter("ball.camera_z", 0.21)
+        self.declare_parameter("ball.camera_pitch_deg", 0.0)
+        self.declare_parameter("ball.floor_z", -0.01)
+        self.declare_parameter("ball.min_range", 0.15)
+        self.declare_parameter("ball.max_range", 6.0)
+        # Metres the two range estimators may differ by before it is worth
+        # saying so. A persistent disagreement is what a wrong camera height or
+        # tilt looks like, and it is otherwise invisible: each estimator on its
+        # own produces a perfectly plausible number.
+        self.declare_parameter("ball.disagreement_warn", 0.6)
+        self.declare_parameter("ball.tracking.max_association_distance", 0.6)
+        self.declare_parameter("ball.tracking.min_hits", 2)
+        self.declare_parameter("ball.tracking.max_coast_time", 1.0)
+        self.declare_parameter("ball.tracking.position_gain", 0.5)
+        self.declare_parameter("ball.tracking.velocity_gain", 0.12)
+        self.declare_parameter("ball.tracking.max_speed", 3.0)
+
+        # ---- person boxes from the fetch detector ----
+        # The fetch detector replaces the pose detector rather than joining it
+        # (two networks on one Orin Nano is most of the GPU), so its person
+        # boxes have to be able to feed the same fusion. They arrive as pixels
+        # and become the same bearing wedge a CamPersonDetection carries, which
+        # is all this node ever used of one. Harmless with both detectors
+        # running: the two wedges land on the same person and the tracker's
+        # association absorbs the duplicate.
+        self.declare_parameter("person_boxes.enabled", True)
+        self.declare_parameter("person_boxes.topic", "cam_people_boxes")
 
         # Publishers
         self.people_pub = self.create_publisher(PoseArray, "people_fusion", 10)
         self.debug_mode = self.get_parameter("debug_mode").value
+
+        # The ball goes out twice, for two kinds of consumer. `ball_fusion`
+        # mirrors `people_fusion` -- a PoseArray in the map frame, which is what
+        # rviz draws and what a behaviour that only wants a place to drive to
+        # needs. `ball_detections` is the labelled form, the same
+        # vision_msgs/Detection3DArray the Deep3R seeking system passes object
+        # hypotheses around in, carrying the score and the ball's diameter as
+        # the bbox size. The fetch tree reads the second, because it wants a
+        # confidence to gate on.
+        self.ball_enabled = bool(self.get_parameter("ball.enabled").value)
+        self.ball_pub = self.create_publisher(PoseArray, "ball_fusion", 10)
+        self.ball_detections_pub = self.create_publisher(
+            Detection3DArray, "ball_detections", 10
+        )
 
         # Subscribers
         self.cam_people_sub = self.create_subscription(
@@ -84,6 +210,22 @@ class PersonLocateNode(Node):
         self.scan_sub = self.create_subscription(
             LaserScan, "scan", self.scan_callback, qos
         )
+        if self.ball_enabled:
+            self.ball_boxes_sub = self.create_subscription(
+                Detection2DArray,
+                str(self.get_parameter("ball.boxes_topic").value),
+                self.ball_boxes_callback,
+                10,
+                callback_group=self.camera_cb_group,
+            )
+        if bool(self.get_parameter("person_boxes.enabled").value):
+            self.person_boxes_sub = self.create_subscription(
+                Detection2DArray,
+                str(self.get_parameter("person_boxes.topic").value),
+                self.person_boxes_callback,
+                10,
+                callback_group=self.camera_cb_group,
+            )
 
         # Map sub uses Transient Local QoS because maps are usually published once
         map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
@@ -112,7 +254,58 @@ class PersonLocateNode(Node):
         self._measurement_lock = threading.Lock()
         self._pending_measurements = None
 
+        # --- the ball path ---
+        self.ball_boxes = []
+        self.ball_received_time = None
+        self.person_boxes = []
+        self.person_boxes_time = None
+        self._ball_lock = threading.Lock()
+        self._warned_box_bounds = False
+        self._warned_range_disagreement = False
+        self.camera = ball_locating.CameraModel(
+            width=float(self.get_parameter("camera_params.camera_width").value),
+            height=float(self.get_parameter("camera_params.camera_height").value),
+            hfov=float(self.get_parameter("camera_params.camera_fov").value),
+            vfov=float(self.get_parameter("camera_params.camera_vfov").value),
+        )
+        self.ball_geometry = ball_locating.BallGeometry(
+            diameter=float(self.get_parameter("ball.diameter").value),
+            camera_x=float(self.get_parameter("ball.camera_x").value),
+            camera_z=float(self.get_parameter("ball.camera_z").value),
+            camera_pitch=math.radians(
+                float(self.get_parameter("ball.camera_pitch_deg").value)
+            ),
+            floor_z=float(self.get_parameter("ball.floor_z").value),
+            min_range=float(self.get_parameter("ball.min_range").value),
+            max_range=float(self.get_parameter("ball.max_range").value),
+        )
+        self.ball_range_source = str(self.get_parameter("ball.range_source").value)
+        self.ball_class_id = str(self.get_parameter("ball.class_id").value)
+        self.ball_detection_timeout = float(
+            self.get_parameter("ball.detection_timeout").value
+        )
+        self.ball_disagreement_warn = float(
+            self.get_parameter("ball.disagreement_warn").value
+        )
+        self.ball_tracker = ball_locating.BallTracker(self._build_ball_config())
+
         self.tracking_enabled = bool(self.get_parameter("tracking.enabled").value)
+        self.camera_frame = str(self.get_parameter("tracking.camera_frame").value)
+        self.exempt_close_range = bool(
+            self.get_parameter("tracking.exempt_close_range").value
+        )
+        self.exempt_outside_fov = bool(
+            self.get_parameter("tracking.exempt_outside_fov").value
+        )
+        self.camera_blind_range = float(
+            self.get_parameter("tracking.camera_blind_range").value
+        )
+        self.camera_half_fov = math.radians(
+            float(self.get_parameter("tracking.camera_half_fov_deg").value)
+        )
+        # With neither exemption there is no blind zone to look up a transform
+        # for, and the tracker behaves exactly as it did before.
+        self._blind_zone_enabled = self.exempt_close_range or self.exempt_outside_fov
         self.cam_detection_timeout = float(
             self.get_parameter("cam_detection_timeout").value
         )
@@ -126,6 +319,25 @@ class PersonLocateNode(Node):
             rate = float(self.get_parameter("tracking.publish_rate").value)
             self.publish_timer = self.create_timer(
                 1.0 / max(rate, 1.0), self.publish_tracks
+            )
+
+        if self.ball_enabled:
+            # Published on a timer for the same reason `people_fusion` is: a
+            # steady rate through a run of frames with no detection, so a
+            # behaviour tree can tell "no ball in the last second" from "the
+            # detector has not spoken since the run started".
+            rate = float(self.get_parameter("ball.publish_rate").value)
+            self.ball_timer = self.create_timer(
+                1.0 / max(rate, 1.0), self.publish_balls
+            )
+            self.get_logger().info(
+                f"Ball locating on: {self.camera.width:.0f}x{self.camera.height:.0f} "
+                f"at {math.degrees(self.camera.hfov):.1f} deg "
+                f"(focal {self.camera.focal_x:.0f} px), ball "
+                f"{self.ball_geometry.diameter * 100:.1f} cm, camera at x="
+                f"{self.ball_geometry.camera_x:.2f} z={self.ball_geometry.camera_z:.2f} "
+                f"pitched {math.degrees(self.ball_geometry.camera_pitch):+.1f} deg, "
+                f"range from '{self.ball_range_source}'."
             )
 
         if self.debug_mode:
@@ -293,10 +505,18 @@ class PersonLocateNode(Node):
 
         self.merge_detections()
 
-    def arrange_with_scan_dets(self, person):
+    def arrange_with_scan_dets(self, bound_angle_min, bound_angle_max):
+        """
+        Pick the DR-SPAAM person inside a camera bearing wedge, or None.
+
+        Takes the two bounds rather than a message, because the wedge now comes
+        from two places: a `CamPersonDetection` from the pose detector, which
+        computed the angles itself, and a bounding box from the fetch detector,
+        whose angles are computed here.
+        """
         # Ensure correct min/max bounds even if wrapped
-        ang_min = min(person.bound_angle_min.data, person.bound_angle_max.data)
-        ang_max = max(person.bound_angle_min.data, person.bound_angle_max.data)
+        ang_min = min(bound_angle_min, bound_angle_max)
+        ang_max = max(bound_angle_min, bound_angle_max)
 
         # Of the LiDAR people inside the camera's bearing wedge, the one the
         # camera is actually looking at is the one nearest the middle of it.
@@ -315,7 +535,8 @@ class PersonLocateNode(Node):
 
         return best_pose
 
-    def extrap_from_raw_scan(self, person):
+    def extrap_from_raw_scan(self, bound_angle_min, bound_angle_max):
+        """Take a range from the raw scan inside a bearing wedge, or None."""
         if self.scan_data is None:
             return None
 
@@ -324,8 +545,8 @@ class PersonLocateNode(Node):
         ang_inc = self.scan_data.angle_increment
 
         # Order the person bounding angles correctly
-        p_min = min(person.bound_angle_min.data, person.bound_angle_max.data)
-        p_max = max(person.bound_angle_min.data, person.bound_angle_max.data)
+        p_min = min(bound_angle_min, bound_angle_max)
+        p_max = max(bound_angle_min, bound_angle_max)
 
         # Calculate indices and clamp them to array bounds to prevent IndexError
         idx_min = int((p_min - ang_min_scan) / ang_inc)
@@ -456,9 +677,48 @@ class PersonLocateNode(Node):
             min_hits=int(track("min_hits")),
             max_coast_time=float(track("max_coast_time")),
             max_uncorroborated_time=float(track("max_uncorroborated_time")),
+            max_blind_zone_time=float(track("max_blind_zone_time")),
+            blind_zone_min_hits=int(track("blind_zone_min_hits")),
+            blind_zone_creates_tracks=bool(track("blind_zone_creates_tracks")),
             measurement_noise=float(track("measurement_noise")),
             process_noise=float(track("process_noise")),
             max_reported_speed=float(track("max_reported_speed")),
+        )
+
+    def _camera_coverage(self):
+        """Return where the camera is looking, as a :class:`CameraCoverage`.
+
+        The pose comes from the *head*, not the base: the head turns, so a
+        person the robot's body has its back to may still be in shot. With no
+        transform there is no way to tell what the camera could see, and None
+        makes the tracker fall back on demanding corroboration everywhere --
+        the stricter of the two behaviours, which is the right way to fail.
+        """
+        if not self._blind_zone_enabled:
+            return None
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                "map", self.camera_frame, rclpy.time.Time()
+            )
+        except Exception as error:
+            self.get_logger().warn(
+                f"camera transform unavailable: {error}", throttle_duration_sec=5.0
+            )
+            return None
+
+        translation = transform.transform.translation
+        q = transform.transform.rotation
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        )
+        return CameraCoverage(
+            x=translation.x,
+            y=translation.y,
+            yaw=yaw,
+            blind_range=self.camera_blind_range,
+            half_fov=self.camera_half_fov,
+            exempt_close_range=self.exempt_close_range,
+            exempt_outside_fov=self.exempt_outside_fov,
         )
 
     def _map_transform(self):
@@ -473,19 +733,56 @@ class PersonLocateNode(Node):
             )
             return None
 
-    def _locate_camera_person(self, person):
-        """Place one camera detection in the base_link frame, or return None.
+    def _locate_from_bearing(self, ang_min, ang_max):
+        """
+        Place a camera bearing wedge in the base_link frame, or return None.
 
         The camera gives a bearing and no range, so the range is looked up in
         whatever the LiDAR has inside that bearing: a DR-SPAAM person first,
         the raw scan second.
         """
-        person_pose = self.arrange_with_scan_dets(person)
+        person_pose = self.arrange_with_scan_dets(ang_min, ang_max)
         if person_pose is None:
-            person_pose = self.extrap_from_raw_scan(person)
+            person_pose = self.extrap_from_raw_scan(ang_min, ang_max)
         if person_pose is None:
             return None
         return self.handle_map_occlusion(person_pose)
+
+    def _locate_camera_person(self, person):
+        """Place one `CamPersonDetection` in the base_link frame, or None."""
+        return self._locate_from_bearing(
+            person.bound_angle_min.data, person.bound_angle_max.data
+        )
+
+    def _camera_wedges(self):
+        """
+        Return every fresh camera bearing wedge, from either detector.
+
+        A wedge is `(min, max)` in radians in the robot's frame, positive to the
+        left, which is what the LiDAR lookup wants. The pose detector supplies
+        them ready-made on `cam_people_detections`; the fetch detector supplies
+        boxes and they are computed here from the lens. Both are staleness
+        checked against the same timeout: a bearing from a frame that is seconds
+        old keeps placing a person wherever the scan happens to hit inside a
+        wedge that no longer means anything, and that is true whichever detector
+        drew the box.
+        """
+        wedges = []
+        if self._camera_is_fresh():
+            for person in self.cam_detections:
+                wedges.append(
+                    (person.bound_angle_min.data, person.bound_angle_max.data)
+                )
+        if self._boxes_are_fresh(self.person_boxes_time):
+            for box in self.person_boxes:
+                centre_u, _, width, _, _ = box
+                wedges.append(
+                    (
+                        self.camera.bearing(centre_u + width / 2.0),
+                        self.camera.bearing(centre_u - width / 2.0),
+                    )
+                )
+        return wedges
 
     def merge_detections(self):
         """Turn this round's detections into map-frame measurements.
@@ -503,16 +800,13 @@ class PersonLocateNode(Node):
         self.trans = transform
 
         camera_points = []
-        if self._camera_is_fresh():
-            for person in self.cam_detections:
-                person_pose = self._locate_camera_person(person)
-                if person_pose is not None:
-                    mapped = do_transform_pose(person_pose, transform)
-                    camera_points.append((mapped.position.x, mapped.position.y))
-                if self.debug_mode:
-                    self.fill_bound_angle(
-                        person.bound_angle_min.data, person.bound_angle_max.data
-                    )
+        for ang_min, ang_max in self._camera_wedges():
+            person_pose = self._locate_from_bearing(ang_min, ang_max)
+            if person_pose is not None:
+                mapped = do_transform_pose(person_pose, transform)
+                camera_points.append((mapped.position.x, mapped.position.y))
+            if self.debug_mode:
+                self.fill_bound_angle(ang_min, ang_max)
 
         if not self.tracking_enabled:
             self._publish_untracked(camera_points)
@@ -549,7 +843,9 @@ class PersonLocateNode(Node):
             self._pending_measurements = None
 
         now = self.get_clock().now()
-        tracks = self.tracker.step(measurements or [], now.nanoseconds * 1e-9)
+        tracks = self.tracker.step(
+            measurements or [], now.nanoseconds * 1e-9, self._camera_coverage()
+        )
         if not tracks:
             return
 
@@ -561,6 +857,206 @@ class PersonLocateNode(Node):
             fused.poses.append(Pose(position=Point(x=x, y=y, z=0.0)))
         self.fused_poses = fused
         self.people_pub.publish(fused)
+
+    # --- the ball ------------------------------------------------------------
+
+    def _build_ball_config(self):
+        """Assemble the ball tracker settings from the ROS parameters."""
+
+        def track(name):
+            return self.get_parameter(f"ball.tracking.{name}").value
+
+        return ball_locating.BallTrackerConfig(
+            max_association_distance=float(track("max_association_distance")),
+            min_hits=int(track("min_hits")),
+            max_coast_time=float(track("max_coast_time")),
+            position_gain=float(track("position_gain")),
+            velocity_gain=float(track("velocity_gain")),
+            max_speed=float(track("max_speed")),
+        )
+
+    def ball_boxes_callback(self, msg):
+        """Keep this frame's ball boxes; the placing happens on the timer."""
+        with self._ball_lock:
+            self.ball_boxes = self._unpack(msg)
+            self.ball_received_time = self.get_clock().now()
+
+    def person_boxes_callback(self, msg):
+        """Keep this frame's person boxes, for the bearing wedges."""
+        with self._ball_lock:
+            self.person_boxes = self._unpack(msg)
+            self.person_boxes_time = self.get_clock().now()
+
+    def _unpack(self, msg):
+        """Reduce a Detection2DArray to `(u, v, width, height, score)` tuples."""
+        boxes = []
+        for detection in msg.detections:
+            score = 0.0
+            for result in detection.results:
+                score = max(score, float(result.hypothesis.score))
+            boxes.append(
+                (
+                    float(detection.bbox.center.position.x),
+                    float(detection.bbox.center.position.y),
+                    float(detection.bbox.size_x),
+                    float(detection.bbox.size_y),
+                    score,
+                )
+            )
+        self._check_box_bounds(boxes)
+        return boxes
+
+    def _check_box_bounds(self, boxes):
+        """
+        Warn once when a box does not fit the frame this node was told about.
+
+        The detector and this node hold two copies of the camera geometry and
+        never compare them, because they never talk. A box centred outside the
+        declared frame is the cheapest evidence that the copies have drifted --
+        and until they agree, every bearing and every apparent-size range
+        computed here is wrong by the ratio between them.
+        """
+        if self._warned_box_bounds:
+            return
+        for centre_u, centre_v, _, _, _ in boxes:
+            if 0.0 <= centre_u <= self.camera.width and 0.0 <= centre_v <= self.camera.height:
+                continue
+            self._warned_box_bounds = True
+            self.get_logger().warn(
+                f"A detection box is centred at ({centre_u:.0f}, {centre_v:.0f}), "
+                f"outside the {self.camera.width:.0f}x{self.camera.height:.0f} frame "
+                "this node is configured for. The detector's camera_params and "
+                "this node's have drifted apart; every bearing and range here is "
+                "wrong until they match. Reported once."
+            )
+            return
+
+    def _boxes_are_fresh(self, received):
+        """Say whether a box message arrived recently enough to act on."""
+        if received is None:
+            return False
+        age = (self.get_clock().now() - received).nanoseconds / 1e9
+        return age <= self.ball_detection_timeout
+
+    def _ball_measurements(self, transform):
+        """Place this frame's ball boxes in the map frame."""
+        with self._ball_lock:
+            fresh = self._boxes_are_fresh(self.ball_received_time)
+            boxes = list(self.ball_boxes) if fresh else []
+        if not boxes:
+            return []
+
+        measurements = []
+        for centre_u, centre_v, width, height, score in boxes:
+            observation = ball_locating.locate(
+                self.camera,
+                (centre_u, centre_v, width, height),
+                self.ball_geometry,
+                score=score,
+                prefer=self.ball_range_source,
+            )
+            if observation is None:
+                continue
+            self._check_range_agreement(observation)
+            local = Pose(
+                position=Point(
+                    x=observation.x, y=observation.y, z=observation.z
+                )
+            )
+            mapped = do_transform_pose(local, transform)
+            measurements.append(
+                ball_locating.BallMeasurement(
+                    x=mapped.position.x,
+                    y=mapped.position.y,
+                    z=mapped.position.z,
+                    score=observation.score,
+                )
+            )
+        return measurements
+
+    def _check_range_agreement(self, observation):
+        """
+        Say once when the two range estimators disagree badly.
+
+        They measure the same distance by unrelated routes -- the ball's size
+        and the floor's geometry -- so agreement is evidence that the camera
+        mounting numbers are right, and a persistent gap is evidence that they
+        are not. Neither estimator can notice this alone: each produces a
+        perfectly plausible number from wrong inputs.
+        """
+        if self._warned_range_disagreement:
+            return
+        if observation.size_range <= 0.0 or observation.ground_range <= 0.0:
+            return
+        gap = abs(observation.size_range - observation.ground_range)
+        if gap <= self.ball_disagreement_warn:
+            return
+        self._warned_range_disagreement = True
+        self.get_logger().warn(
+            f"The ball's apparent size says {observation.size_range:.2f} m and the "
+            f"floor plane says {observation.ground_range:.2f} m, a gap of "
+            f"{gap:.2f} m. The two are independent, so this is most likely "
+            f"ball.camera_z ({self.ball_geometry.camera_z:.2f} m) or "
+            f"ball.camera_pitch_deg "
+            f"({math.degrees(self.ball_geometry.camera_pitch):+.1f}) not matching "
+            "the robot -- or the ball not being ball.diameter across. Published "
+            f"range is from '{self.ball_range_source}'. Reported once."
+        )
+
+    def publish_balls(self):
+        """
+        Advance the ball tracker and publish where every ball is.
+
+        Both forms go out together and describe the same tracks, so a consumer
+        never has to reconcile them. Nothing is published when there is no
+        confirmed ball: an empty PoseArray and no message mean the same thing
+        to a consumer that ages its last message, and this way the topic's
+        traffic is a sign that something is being seen.
+        """
+        transform = self._map_transform()
+        if transform is None:
+            return
+
+        now = self.get_clock().now()
+        tracks = self.ball_tracker.step(
+            self._ball_measurements(transform), now.nanoseconds * 1e-9
+        )
+        if not tracks:
+            return
+
+        stamp = now.to_msg()
+        poses = PoseArray()
+        poses.header.stamp = stamp
+        poses.header.frame_id = "map"
+        detections = Detection3DArray()
+        detections.header = poses.header
+
+        for track in tracks:
+            x, y, z = track.position
+            poses.poses.append(Pose(position=Point(x=x, y=y, z=z)))
+
+            detection = Detection3D()
+            detection.header = poses.header
+            detection.id = self.ball_class_id
+            detection.bbox.center.position.x = x
+            detection.bbox.center.position.y = y
+            detection.bbox.center.position.z = z
+            detection.bbox.center.orientation.w = 1.0
+            detection.bbox.size.x = self.ball_geometry.diameter
+            detection.bbox.size.y = self.ball_geometry.diameter
+            detection.bbox.size.z = self.ball_geometry.diameter
+            hypothesis = ObjectHypothesisWithPose()
+            hypothesis.hypothesis.class_id = self.ball_class_id
+            hypothesis.hypothesis.score = float(track.score)
+            hypothesis.pose.pose.position.x = x
+            hypothesis.pose.pose.position.y = y
+            hypothesis.pose.pose.position.z = z
+            hypothesis.pose.pose.orientation.w = 1.0
+            detection.results.append(hypothesis)
+            detections.detections.append(detection)
+
+        self.ball_pub.publish(poses)
+        self.ball_detections_pub.publish(detections)
 
     def _publish_untracked(self, camera_points):
         """Publish raw fused points, the way the node behaved before tracking.
