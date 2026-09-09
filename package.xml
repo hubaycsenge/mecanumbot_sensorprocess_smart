@@ -20,6 +20,9 @@
   <exec_depend>hri_msgs</exec_depend>
   <!-- Bounding boxes out of the fetch detector, and the located ball -->
   <exec_depend>vision_msgs</exec_depend>
+  <!-- perception.launch.py starts the compressed camera publisher when the
+       detector is not to own the camera itself. Nothing here imports it. -->
+  <exec_depend>mecanumbot_camera_stream</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

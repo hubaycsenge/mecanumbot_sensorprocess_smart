@@ -22,8 +22,9 @@ the robot can do:
 | `mecanumbot_onboard_cam_detect_people` | YOLO pose, DeepStream, Jetson only | `cam_people_detections` + ROS4HRI | leading and ostensive experiments — anything needing keypoints |
 | `mecanumbot_onboard_cam_detect_objects` | plain YOLO (COCO), DeepStream, Jetson only | `cam_people_boxes`, `cam_ball_boxes` (boxes, no keypoints) | the fetch game — the only variant that can see a ball |
 
-Run **one** of them. On an Orin Nano two networks on one camera stream is most of the
-GPU, and the fetch detector is a straight trade rather than an upgrade: a pose network
+Run **one** of them, which `perception.launch.py`'s `detector` argument enforces. On an
+Orin Nano two networks on one camera stream is most of the GPU, and the fetch detector
+is a straight trade rather than an upgrade: a pose network
 has exactly one class, so there is no threshold at which it starts finding tennis
 balls, and a plain detector has no skeletons, so the ostensive gestures are unavailable
 while it is the one in use. `mecanumbot_locate_detections` accepts person evidence from
@@ -56,20 +57,67 @@ is what `mecanumbot_fetch_behaviour` reads. The LiDAR node additionally publishe
 standards-compliant output for external HRI tooling; nothing inside this repository
 consumes them yet.
 
-## Launch file
+## Launch files
 
-`launch/mecanumbot_peopledetect.launch.py` starts the LiDAR people detector, the
-camera people detector (with `from_topic` forced to `true`), and the
-detection-localization node in the `mecanumbot` namespace, all with
-`config/lidar_peopledetect_config.yaml` applied. Node names must match the YAML's
-top-level keys, so do not rename them in the launch file.
+`launch/perception.launch.py` is the whole pipeline, and it is what every behaviour
+launch file includes. `launch/mecanumbot_peopledetect.launch.py` is a thin wrapper
+over it under the older name, for a run with no behaviour tree.
 
-`detector:=pose | fetch | both` picks which camera detector it starts — `pose` (the
-default) the Ultralytics node, `fetch` the DeepStream people-and-balls node, `both`
-for a bench comparison. The DeepStream pose node and the legacy tennis-ball node are
-not started by this launch file; the DeepStream pose node is started by
-`mecanumbot_bringup`'s base launch, which also has `use_fetch_detector:=true` for the
-fetch one.
+**The base launch no longer starts any of this.** It used to, so every run of the
+robot — a teleop session, a mapping run, T1 exploration — carried a DR-SPAAM
+detector, a DeepStream network and the fusion node whether or not anything subscribed
+to them. On an Orin Nano that is not free: the network is most of the GPU, and it
+holds the camera open so nothing else can have it. Each behaviour now starts the
+detector it needs:
+
+| Launch | detector | `use_camera` |
+| --- | --- | --- |
+| `mecanumbot_leading_behaviour` | `pose` | **true** — a leading trial is scored afterwards from what the robot could see |
+| `mecanumbot_ostensive_behaviour` | `pose` | false |
+| `mecanumbot_seek` | `pose` (for the alert's audience) | false |
+| `mecanumbot_fetch_behaviour` | `fetch` | false |
+
+`mecanumbot_bringup`'s `launch_external.launch.py` used to start `mecanumbot_lidar_detect_people` unconditionally on the operator PC, under the same node name and namespace as the one here — so it either duplicated the robot's detector on `dr_spaam/dets` and `subject_pose` or ran with nothing subscribed. It is now behind `use_people_detection`, default false. Set it true only to run DR-SPAAM off the robot, and then keep the robot's off (`use_lidar_people:=false`, or the tree's `use_perception:=false`).
+
+### Arguments
+
+| Argument | Default | Function |
+| --- | --- | --- |
+| `namespace` | `mecanumbot` | Namespace the perception nodes run in. |
+| `detector` | `pose` | `pose` (DeepStream skeletons) \| `fetch` (DeepStream people **and balls**) \| `none` (LiDAR only). |
+| `use_lidar_people` | `true` | Run DR-SPAAM on the scan. |
+| `use_camera` | `false` | See below — this is a choice, not a flag. |
+| `camera_topic` | `/camera/image_raw/compressed` | Where the frames are published and read. Absolute on purpose. |
+| `camera_width` / `camera_height` | `1280` / `720` | The frame size, for **all three** of camera, detector and fusion. |
+| `camera_fps`, `jpeg_quality` | `15.0`, `80` | Only used when `use_camera` is true. |
+| `yolo_imgsz` / `yolo_model` | `1280` / `yolo26m-pose` | The pose model. |
+| `fetch_imgsz` / `fetch_model` | `640` / `yolo26m` | The fetch model. |
+
+### `use_camera`: who owns the camera
+
+The camera can only be opened once, so this is a choice between two things you might
+want and cannot both have for free:
+
+* **false** — the DeepStream detector opens the camera itself through
+  `nvarguscamerasrc`. Cheapest path: no JPEG encode, no decode, no topic. But nothing
+  else can have the camera, so **there is no `/camera/image_raw/compressed`** for a
+  recording, the web GUI, or an operator to look at.
+* **true** — `mecanumbot_camera_stream`'s compressed publisher owns the camera and the
+  detector subscribes to its topic. That costs a JPEG encode on the publisher and a
+  decode in the detector. It is what the leading experiment runs with.
+
+### One frame size, three nodes
+
+`camera_width` / `camera_height` go to the camera publisher, to the detector and to the
+fusion node together. All three had their own copy before and nothing compared them —
+but every bearing and every apparent-size range is computed from the frame size, so a
+disagreement is not a warning, it is silently wrong numbers. (`camera_compressed.launch.py`
+declared `width`/`height` arguments and then dropped them on the floor; that is fixed,
+so passing them now does something.)
+
+Node names must match the YAML's top-level keys, so do not rename them in the launch
+file. The legacy tennis-ball node and the portable Ultralytics detector are not started
+by either launch file.
 
 ## Node: mecanumbot_lidar_detect_people
 
@@ -582,11 +630,14 @@ off joints that are in the wrong place, and the fusion in
 An ONNX export is fixed to the `imgsz` it was exported at, so the exports are stored
 **one folder per size** — `models/imgsz_640/`, `models/imgsz_1280/` — with the
 size-independent `.pt` checkpoints left at the top of `models/`. `model_params.imgsz`
-picks the folder and `model_params.model_name` the file in it; the base launch exposes
-both as the `yolo_imgsz` and `yolo_model` arguments:
+picks the folder and `model_params.model_name` the file in it; `perception.launch.py`
+exposes both as the `yolo_imgsz` and `yolo_model` arguments (and `fetch_imgsz` /
+`fetch_model` for the other detector), and every behaviour launcher forwards them:
 
 ```bash
-ros2 launch mecanumbot_bringup launch_mecanumbot_base.launch.py yolo_imgsz:=640
+ros2 launch mecanumbot_sensorprocess_smart perception.launch.py yolo_imgsz:=640
+ros2 launch mecanumbot_leading_behaviour launch_wifi_condition_sequence.launch.py \
+    yolo_imgsz:=640
 ```
 
 `deepstream_config/config_infer_yolo26_pose.txt` is the **template** for that choice,
@@ -1011,7 +1062,8 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 | test/test_ball_locating.py                                             | Unit tests for the ball geometry and its tracker; run without a ROS graph. |
 | test/test_person_tracking.py                                           | Unit tests for the map-frame tracker; run without a ROS graph.       |
 | test/test_lidar_tracking.py                                            | Unit tests for the DR-SPAAM tracker; run without ROS, torch or `dr_spaam`. |
-| launch/mecanumbot_peopledetect.launch.py                               | Launches the people-detection pipeline with shared parameters.       |
+| launch/perception.launch.py                                            | The pipeline: DR-SPAAM, one camera detector, the fusion, and optionally the camera itself. Included by every behaviour launch file. |
+| launch/mecanumbot_peopledetect.launch.py                               | Thin wrapper over `perception.launch.py` under its older name, for a run with no tree. |
 | config/lidar_peopledetect_config.yaml                                  | Runtime ROS parameters for node topics and thresholds.               |
 | models/dr_spaam_5_on_frog.pth                                          | DR-SPAAM pretrained weights used by the LiDAR detector.              |
 | models/dr_spaam.onnx                                                   | ONNX export of the DR-SPAAM model.                                   |
@@ -1034,11 +1086,17 @@ line or in the launch file.
 colcon build --symlink-install --packages-select mecanumbot_sensorprocess_smart
 source install/setup.bash
 
-# whole people-detection pipeline
-ros2 launch mecanumbot_sensorprocess_smart mecanumbot_peopledetect.launch.py
+# the whole pipeline, on its own (the base launch does not start it)
+ros2 launch mecanumbot_sensorprocess_smart perception.launch.py
 
 # ... with the fetch detector instead of the pose one, so balls are found too
-ros2 launch mecanumbot_sensorprocess_smart mecanumbot_peopledetect.launch.py detector:=fetch
+ros2 launch mecanumbot_sensorprocess_smart perception.launch.py detector:=fetch
+
+# ... and with the camera published for a recording, which the detector then reads
+ros2 launch mecanumbot_sensorprocess_smart perception.launch.py use_camera:=true
+
+# the older name still works; it is a wrapper over the same file
+ros2 launch mecanumbot_sensorprocess_smart mecanumbot_peopledetect.launch.py
 
 # individual nodes
 ros2 run mecanumbot_sensorprocess_smart mecanumbot_onboard_cam_detect_people

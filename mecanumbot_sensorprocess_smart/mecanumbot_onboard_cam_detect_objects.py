@@ -38,9 +38,9 @@ is shared code in `nvinfer_config.py`.
 
 Both may run at once -- they are separate nvinfer instances with separate
 `gie-unique-id`s and separate topics -- but on an Orin Nano two networks on one
-camera stream is most of the GPU. The intended arrangement is that the fetch
-game runs this one *instead* (`use_fetch_detector:=true use_pose_detector:=false`
-on the base launch), and `mecanumbot_locate_detections` accepts person evidence
+camera stream is most of the GPU, so `perception.launch.py`'s `detector` argument
+picks exactly one. The fetch game runs this one *instead* of the pose detector
+(`detector:=fetch`), and `mecanumbot_locate_detections` accepts person evidence
 from either source, so `people_fusion` keeps flowing whichever is up.
 """
 
