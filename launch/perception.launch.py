@@ -81,12 +81,13 @@ PERCEPTION_YAML = os.path.join(
     "lidar_peopledetect_config.yaml",
 )
 
+'''
 CAMERA_LAUNCH = os.path.join(
     get_package_share_directory("mecanumbot_camera_stream"),
     "launch",
     "camera_compressed.launch.py",
 )
-
+'''
 
 def generate_launch_description():
     """Build the launch description for the perception pipeline."""
@@ -209,18 +210,7 @@ def generate_launch_description():
                     camera_height,
                 ]
             ),
-            # The camera, when something other than the detector is to own it.
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(CAMERA_LAUNCH),
-                condition=IfCondition(use_camera),
-                launch_arguments={
-                    "topic_name": camera_topic,
-                    "width": camera_width,
-                    "height": camera_height,
-                    "fps": LaunchConfiguration("camera_fps"),
-                    "jpeg_quality": LaunchConfiguration("jpeg_quality"),
-                }.items(),
-            ),
+            
             Node(
                 namespace=namespace,
                 package="mecanumbot_sensorprocess_smart",
