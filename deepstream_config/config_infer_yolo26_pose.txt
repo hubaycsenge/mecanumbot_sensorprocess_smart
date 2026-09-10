@@ -47,9 +47,14 @@ force-implicit-batch-dim=0
 parse-bbox-instance-mask-func-name=NvDsInferParseYoloPose
 
 # --- THE CRITICAL PARSER SETTINGS ---
-# Machine-specific: where DeepStream-Yolo-Pose was built. Either edit it here or
-# set model_params.custom_lib_path, which overrides this line in the rendered copy.
-custom-lib-path=/home/ubuntu/deepstream_source/DeepStream-Yolo-Pose/nvdsinfer_custom_impl_Yolo_pose/libnvdsinfer_custom_impl_Yolo_pose.so
+# Where DeepStream-Yolo-Pose was built differs per machine, so the node expands
+# ~ and $VARS in this line and, if nothing is there, looks for
+# DeepStream-Yolo-Pose/ under ~/deepstream_source (the robot) and
+# ~/Documents/installed_external (a laptop), writing whichever exists into the
+# rendered copy. model_params.custom_lib_path replaces the search with one path.
+# nvinfer itself expands nothing: to feed this file to deepstream-app directly,
+# write an absolute path here.
+custom-lib-path=~/deepstream_source/DeepStream-Yolo-Pose/nvdsinfer_custom_impl_Yolo_pose/libnvdsinfer_custom_impl_Yolo_pose.so
 parse-bbox-instance-mask-func-name=NvDsInferParseYoloPose
 output-instance-mask=1
 [class-attrs-all]

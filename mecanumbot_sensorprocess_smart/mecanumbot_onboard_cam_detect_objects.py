@@ -87,6 +87,14 @@ COLOUR_PERSON = (255, 0, 0)
 COLOUR_BALL = (0, 220, 220)
 COLOUR_REJECTED = (0, 0, 255)
 
+# The bounding-box parser library, relative to the directory DeepStream-Yolo
+# is checked out in; `nvinfer_config.BUILD_ROOTS` are the directories searched.
+DEEPSTREAM_YOLO_LIB = os.path.join(
+    "DeepStream-Yolo",
+    "nvdsinfer_custom_impl_Yolo",
+    "libnvdsinfer_custom_impl_Yolo.so",
+)
+
 
 class DeepStreamObjectDetectNode(Node):
     """Detect people and balls in one DeepStream pass, publish both as boxes."""
@@ -266,14 +274,42 @@ class DeepStreamObjectDetectNode(Node):
             return None, None
         return onnx, engine
 
+    def _custom_lib_path(self, template):
+        """
+        Return the DeepStream-Yolo parser library nvinfer should load.
+
+        `nvinfer_config.find_custom_lib` sets the order it is looked for in. When
+        no candidate exists the first one is returned anyway, so nvinfer fails
+        on a path this log has already named.
+        """
+        configured = str(self.get_parameter("model_params.custom_lib_path").value or "")
+        found, tried = nvinfer_config.find_custom_lib(
+            configured,
+            nvinfer_config.read_setting(template, "custom-lib-path"),
+            DEEPSTREAM_YOLO_LIB,
+        )
+        if found:
+            self.get_logger().info(f"custom-lib-path: {found}")
+            return found
+        self.get_logger().error(
+            "No DeepStream-Yolo parser library at any of: " + ", ".join(tried)
+            + ". Build it in the DeepStream-Yolo checkout (make -C "
+            "nvdsinfer_custom_impl_Yolo, with CUDA_VER set) or point "
+            "model_params.custom_lib_path at it; ~ and $USER are expanded."
+        )
+        return tried[0]
+
     def _render_nvinfer_config(self):
         """
         Write the nvinfer config for the selected detector and return its path.
 
         The packaged `config_infer_yolo26_det.txt` is a template; the model, its
         engine and the input size it was exported at are rewritten here from
-        `model_params`. `model_params.nvinfer_config` bypasses all of it and
-        hands nvinfer the named file untouched.
+        `model_params`, and `custom-lib-path` becomes wherever the parser library
+        is on this machine. Without the selected ONNX only the paths are
+        rewritten, so the model the template names is the one that runs.
+        `model_params.nvinfer_config` bypasses all of it and hands nvinfer the
+        named file untouched.
         """
         share = get_package_share_directory("mecanumbot_sensorprocess_smart")
         template = os.path.join(
@@ -285,34 +321,34 @@ class DeepStreamObjectDetectNode(Node):
             self.get_logger().info(f"nvinfer config: {override} (used as-is).")
             return override
 
+        imgsz = int(self.get_parameter("model_params.imgsz").value)
         onnx, engine = self._model_path()
         if onnx is None:
             self.get_logger().warn(
-                f"Falling back to the packaged {template} unchanged; whatever model "
-                "it names is the one that will run."
+                f"Falling back to the model named in the packaged {template}; "
+                "whatever model it names is the one that will run."
             )
-            return template
-
-        imgsz = int(self.get_parameter("model_params.imgsz").value)
-        custom_lib = str(self.get_parameter("model_params.custom_lib_path").value or "")
-        # Relative paths in an nvinfer config resolve against the config's own
-        # directory, so they have to be absolutized before the copy moves.
-        substitutions = {
-            "onnx-file": onnx,
-            "model-engine-file": engine,
-            "infer-dims": "3;{};{}".format(imgsz, imgsz),
-            "labelfile-path": os.path.join(share, "deepstream_config", "labels_coco.txt"),
-        }
-        if custom_lib:
-            substitutions["custom-lib-path"] = custom_lib
-
-        rendered = os.path.join(
-            tempfile.gettempdir(),
-            "mecanumbot_nvinfer_{}_imgsz{}.txt".format(
+            rendered_name = "mecanumbot_nvinfer_" + os.path.basename(template)
+        else:
+            rendered_name = "mecanumbot_nvinfer_{}_imgsz{}.txt".format(
                 str(self.get_parameter("model_params.model_name").value), imgsz
-            ),
-        )
+            )
+        rendered = os.path.join(tempfile.gettempdir(), rendered_name)
+
         try:
+            # Relative paths in an nvinfer config resolve against the config's own
+            # directory, so they have to be absolutized before the copy moves.
+            substitutions = nvinfer_config.absolute_paths(template)
+            substitutions["custom-lib-path"] = self._custom_lib_path(template)
+            if onnx is not None:
+                substitutions.update({
+                    "onnx-file": onnx,
+                    "model-engine-file": engine,
+                    "infer-dims": "3;{};{}".format(imgsz, imgsz),
+                    "labelfile-path": os.path.join(
+                        share, "deepstream_config", "labels_coco.txt"
+                    ),
+                })
             nvinfer_config.render_config(template, substitutions, rendered)
         except OSError as exc:
             self.get_logger().error(
@@ -320,6 +356,12 @@ class DeepStreamObjectDetectNode(Node):
                 "template unchanged."
             )
             return template
+
+        if onnx is None:
+            self.get_logger().info(
+                f"nvinfer config: {rendered} (rendered from {template}, paths only)."
+            )
+            return rendered
 
         self.get_logger().info(
             f"nvinfer config: {rendered} (rendered from {template}) -> "

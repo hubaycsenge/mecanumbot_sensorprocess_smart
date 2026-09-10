@@ -333,7 +333,7 @@ ROS node name: `mecanumbot_cam_detect_people_ds`.
 | `model_params.model_name`     | `yolo26m-pose`                | Model stem inside that folder.                                                        |
 | `model_params.precision`      | `fp16`                        | Engine precision; part of the engine filename, must match `network-mode`.             |
 | `model_params.models_dir`     | `''`                          | Where the `imgsz_<n>` folders live; empty means the package share `models/`.           |
-| `model_params.custom_lib_path`| `''`                          | Overrides `custom-lib-path`; empty keeps the one in the nvinfer config.               |
+| `model_params.custom_lib_path`| `''`                          | The pose parser library, `~`/`$USER` expanded. Empty searches the config's path, then `~/deepstream_source` and `~/Documents/installed_external`. |
 | `model_params.nvinfer_config` | `''`                          | A complete nvinfer config to use untouched, disabling the substitution below.          |
 | `ros4hri.enabled`             | `true`                        | Publishes the `/humans/bodies` tree in addition to the native messages.               |
 | `ros4hri.prefix`              | `/humans`                     | Root of the ROS4HRI topic tree. Absolute, so the node namespace does not shift it.    |
@@ -656,9 +656,18 @@ loaded for a 1280 export — the engine filename does not encode the input size,
 mismatch used to be silent. Re-exporting at the *same* size still requires deleting the
 engine by hand; `models/conv_to_onnx.py` names any it finds.
 
-`custom-lib-path` is still a machine-specific absolute path under `/home/ubuntu/`
-(where `DeepStream-Yolo-Pose` was built). Either edit it in the template or set
-`model_params.custom_lib_path`.
+`custom-lib-path` is rewritten too, because where `DeepStream-Yolo-Pose` was built
+differs per machine. The template names `~/deepstream_source/DeepStream-Yolo-Pose/…`
+(the robot's layout); the node expands `~` and `$VARS` in it and, if nothing is there,
+looks for the same library under `~/Documents/installed_external/` (a laptop's), writing
+whichever exists into the copy and logging it. Setting `model_params.custom_lib_path`
+replaces the search with that one path, also expanded (`$HOME/…`, `/home/$USER/…`).
+If nothing is found the error lists every path tried. `nvinfer` expands nothing itself,
+so a template fed to it directly needs an absolute path.
+
+The rendered copy is written even when the selected ONNX is missing — with only the
+paths absolutized and the library resolved — so the fallback runs the model the
+template names rather than failing on the library first.
 
 ```bash
 # export at a size and build its engine (on the Jetson; engines do not transfer)
@@ -722,7 +731,7 @@ is.
 | `model_params.model_name` | `yolo26m` | Stem of the ONNX in that folder. |
 | `model_params.precision` | `fp16` | Must match `network-mode` in the nvinfer config. |
 | `model_params.models_dir` | `''` | Empty means the package share `models/`. |
-| `model_params.custom_lib_path` | `''` | Where **DeepStream-Yolo** was built. Empty keeps the path in the config file. |
+| `model_params.custom_lib_path` | `''` | Where **DeepStream-Yolo** was built, `~`/`$USER` expanded. Empty searches the config's path, then `~/deepstream_source` and `~/Documents/installed_external`. |
 | `model_params.nvinfer_config` | `''` | A complete config to hand nvinfer untouched; disables all substitution. |
 | `classes.person_id` / `classes.ball_id` | `0` / `32` | COCO numbering for the shipped model. |
 | `classes.person_label` / `classes.ball_label` | `person` / `sports ball` | What travels downstream — a numeric id means nothing once the detection has left the camera. |
@@ -772,9 +781,16 @@ Two settings in it are not free choices:
 
 The `custom-lib-path` points at **DeepStream-Yolo**'s
 `libnvdsinfer_custom_impl_Yolo.so` — a different library from the pose node's
-`libnvdsinfer_custom_impl_Yolo_pose.so`, with a different parser function. Both are
-machine-specific paths that have to be edited or overridden with
-`model_params.custom_lib_path`.
+`libnvdsinfer_custom_impl_Yolo_pose.so`, with a different parser function. It is found
+the same way as the pose node's: `~/deepstream_source/DeepStream-Yolo/…` as written,
+then `~/Documents/installed_external/DeepStream-Yolo/…`, or `model_params.custom_lib_path`
+(with `~`/`$USER` expanded). The library has to be **built** on each machine — a
+checkout alone has only the sources:
+
+```bash
+cd ~/deepstream_source/DeepStream-Yolo   # or ~/Documents/installed_external/DeepStream-Yolo
+CUDA_VER=12.6 make -C nvdsinfer_custom_impl_Yolo   # CUDA_VER = the installed CUDA
+```
 
 **`yolo26m.pt` is not among the shipped model files** -- only the pose checkpoints and
 `yolo26n.pt` are. Fetch it (ultralytics downloads it on first use) and export it before

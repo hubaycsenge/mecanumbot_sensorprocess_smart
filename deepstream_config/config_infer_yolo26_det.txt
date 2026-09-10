@@ -56,11 +56,15 @@ symmetric-padding=1
 #workspace-size=2000
 
 # --- THE CRITICAL PARSER SETTINGS ---
-# DeepStream-Yolo's ordinary bounding-box parser, NOT the pose one. Machine
-# specific: where DeepStream-Yolo was built. Either edit it here or set
-# model_params.custom_lib_path, which overrides this line in the rendered copy.
+# DeepStream-Yolo's ordinary bounding-box parser, NOT the pose one. Where it
+# was built differs per machine, so the node expands ~ and $VARS in this line
+# and, if nothing is there, looks for DeepStream-Yolo/ under ~/deepstream_source
+# (the robot) and ~/Documents/installed_external (a laptop), writing whichever
+# exists into the rendered copy. model_params.custom_lib_path replaces the
+# search with one path. nvinfer itself expands nothing: to feed this file to
+# deepstream-app directly, write an absolute path here.
 parse-bbox-func-name=NvDsInferParseYolo
-custom-lib-path=/home/csenge/Documents/installed_external/DeepStream-Yolo/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+custom-lib-path=~/deepstream_source/DeepStream-Yolo/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
 engine-create-func-name=NvDsInferYoloCudaEngineGet
 
 [class-attrs-all]

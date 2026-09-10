@@ -27,6 +27,71 @@ thing they genuinely do the same way.
 
 import os
 
+# Where the DeepStream-Yolo checkouts are built, searched in this order when
+# the configured parser library is not there: the robot keeps them in
+# ~/deepstream_source, a development machine in the workspace's vendored
+# installed_external/. Written against `~` so that neither is tied to one user.
+BUILD_ROOTS = ("~/deepstream_source", "~/Documents/installed_external")
+
+# The settings in an nvinfer config that name a file. A relative one resolves
+# against the config's own directory, so it stops resolving once a rendered
+# copy is written anywhere else.
+PATH_KEYS = ("onnx-file", "model-engine-file", "labelfile-path")
+
+
+def expand_path(path):
+    """Return `path` with `~` and environment variables (`$HOME`, `$USER`) expanded."""
+    return os.path.expandvars(os.path.expanduser(path)) if path else path
+
+
+def find_custom_lib(configured, template_value, library, roots=BUILD_ROOTS):
+    """
+    Return `(found, tried)` for the parser library nvinfer has to load.
+
+    `configured` is `model_params.custom_lib_path`. When it is set it is the
+    only candidate: an explicit path that does not exist is a mistake to
+    report, not one to paper over by loading some other build. When it is
+    empty, the path written in the template is tried first and then `library`
+    (relative, e.g. `DeepStream-Yolo/nvdsinfer_custom_impl_Yolo/lib....so`)
+    under each of `roots`. Every candidate has `~` and `$VARS` expanded, which
+    nvinfer itself does not do.
+
+    `found` is the first candidate that exists, or None; `tried` is every
+    expanded path looked at, in order, so a failure can say where it looked.
+    """
+    if configured:
+        candidates = [configured]
+    else:
+        candidates = [template_value] + [os.path.join(root, library) for root in roots]
+
+    tried = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = expand_path(candidate)
+        if path in tried:
+            continue
+        tried.append(path)
+        if os.path.isfile(path):
+            return path, tried
+    return None, tried
+
+
+def absolute_paths(config_path, keys=PATH_KEYS):
+    """
+    Return the named file settings of a config, resolved against its directory.
+
+    Only relative values are returned; an absolute one, and one written against
+    `~` or a variable, is already independent of where the config sits.
+    """
+    base = os.path.dirname(os.path.abspath(config_path))
+    resolved = {}
+    for key in keys:
+        value = read_setting(config_path, key)
+        if value and not os.path.isabs(value) and not value.startswith(("~", "$")):
+            resolved[key] = os.path.normpath(os.path.join(base, value))
+    return resolved
+
 
 def model_paths(models_dir, imgsz, model_name, precision, batch=1, gpu=0):
     """

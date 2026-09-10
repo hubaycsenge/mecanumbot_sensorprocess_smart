@@ -76,8 +76,11 @@ mecanumbot_cam_detect_people_ds:
       # tree on the robot if nvinfer should build its engines where they
       # survive a rebuild.
       models_dir: ''
-      # Where DeepStream-Yolo-Pose was built. Empty keeps the custom-lib-path
-      # written in the nvinfer config.
+      # Where DeepStream-Yolo-Pose was built; ~, $HOME and $USER are expanded.
+      # Empty tries the custom-lib-path in the nvinfer config, then
+      # DeepStream-Yolo-Pose/ under ~/deepstream_source (the robot) and
+      # ~/Documents/installed_external (a laptop), so it works on both
+      # without being set. Set, it is the only path tried.
       custom_lib_path: ''
       # A complete nvinfer config to hand to nvinfer untouched; setting it
       # disables all of the substitution above.
@@ -393,8 +396,11 @@ mecanumbot_cam_detect_objects_ds:
       # Empty means the package share models/ folder.
       models_dir: ''
       # Where DeepStream-Yolo (NOT DeepStream-Yolo-Pose -- a different library
-      # with a different parser) was built. Empty keeps the custom-lib-path
-      # written in config_infer_yolo26_det.txt.
+      # with a different parser) was built; ~, $HOME and $USER are expanded.
+      # Empty tries the custom-lib-path in config_infer_yolo26_det.txt, then
+      # DeepStream-Yolo/ under ~/deepstream_source (the robot) and
+      # ~/Documents/installed_external (a laptop). Set, it is the only path
+      # tried.
       custom_lib_path: ''
       # A complete nvinfer config to hand to nvinfer untouched; setting it
       # disables all of the substitution above.
