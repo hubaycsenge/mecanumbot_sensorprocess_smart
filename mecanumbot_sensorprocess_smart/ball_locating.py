@@ -123,12 +123,12 @@ class BallGeometry:
     Where the camera is and how big the ball is: everything the range needs.
 
     The mounting numbers are parameters rather than TF lookups on purpose. The
-    URDF's `head_link` is rotated 90 degrees about x and `camera_link` another
-    90 about y, so neither is an x-forward, z-up frame and neither gives the
-    camera's height above the floor without unpicking two rotations that were
-    written for the mesh rather than for optics. Two measured numbers are more
-    honest than a derivation nobody can check by looking at the robot -- and
-    they are logged at startup so a run says what it assumed.
+    URDF's camera frame (x along the lens since 2026-09-14; it used to look
+    along the neck axis) is only as good as its unmeasured translations and
+    `head_joint`'s level zero, and TF says nothing about *which* frame a neck
+    reading belongs to. Measured numbers are more honest than a derivation
+    nobody can check by looking at the robot -- and they are logged at startup
+    so a run says what it assumed.
 
     `camera_pitch` is positive when the camera looks **up**, and it is the tilt
     of *one frame*. Neither estimator escapes it: apparent size gives how far

@@ -146,9 +146,8 @@ class PersonLocateNode(Node):
         # camera_z and camera_pitch_deg have actually been measured).
         self.declare_parameter("ball.range_source", ball_locating.SOURCE_SIZE)
         # Where the camera sits in the robot's base frame [m], and where the
-        # floor is in it. The URDF cannot be read for these: head_link and
-        # camera_link are each rotated 90 degrees for the meshes, so neither is
-        # an x-forward, z-up frame. Measure them on the robot.
+        # floor is in it. Parameters, not the URDF: its camera translations
+        # were never measured. Measure them on the robot.
         self.declare_parameter("ball.camera_x", 0.13)
         self.declare_parameter("ball.camera_z", 0.21)
         self.declare_parameter("ball.camera_pitch_deg", 0.0)

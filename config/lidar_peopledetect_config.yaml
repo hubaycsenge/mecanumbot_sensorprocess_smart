@@ -319,11 +319,9 @@ mecanumbot_locate_detections:
       range_source: size
 
       # Where the camera sits in the robot's base frame [m], and where the floor
-      # is in it. These are NOT read from the URDF, and cannot be: head_link is
-      # rotated 90 deg about x and camera_link another 90 about y, so neither is
-      # an x-forward, z-up frame and neither gives the camera's height without
-      # unpicking two rotations written for the meshes. Measure them on the
-      # robot. base_link sits 0.01 m above base_footprint, so the floor is a
+      # is in it. These are NOT read from the URDF: its camera translations were
+      # never measured, and its camera frame looked along the neck axis until
+      # 2026-09-14. Measure them on the robot. base_link sits 0.01 m above base_footprint, so the floor is a
       # centimetre below the base frame's origin.
       camera_x: 0.13
       camera_z: 0.21

@@ -59,6 +59,19 @@ from the frame size, so a disagreement is not a warning, it is silently wrong
 numbers. The default is 1280x720, which is what the DeepStream detectors were
 already configured for; the camera publisher's own config file says 640x480 and
 is overridden here.
+
+## `debug_image`: what the detector saw
+
+Sets `debug_mode` on whichever camera detector runs, which publishes the frame
+the network was given with every box drawn on it -- accepted ones in colour,
+refused ones in red with the check they failed:
+
+* `pose`  -> `/<namespace>/cam_people_detections/debug_image/compressed`
+* `fetch` -> `/<namespace>/cam_object_detections/debug_image/compressed`
+
+It is the only way to see the camera when `use_camera` is false. It costs a
+copy of the frame out of GPU memory and a JPEG encode per frame, so it is off
+unless a launch asks for it.
 """
 
 import os
@@ -105,6 +118,7 @@ def generate_launch_description():
     # The detectors read the frame off a topic only when something else owns the
     # camera, which is exactly when `use_camera` is true.
     from_topic = ParameterValue(use_camera, value_type=bool)
+    debug_mode = ParameterValue(LaunchConfiguration("debug_image"), value_type=bool)
     width = ParameterValue(camera_width, value_type=int)
     height = ParameterValue(camera_height, value_type=int)
 
@@ -155,6 +169,15 @@ def generate_launch_description():
                     "Absolute on purpose: the publisher is not namespaced and "
                     "the detectors are, so a relative name would be looked for "
                     "under /<namespace>/ and never found"
+                ),
+            ),
+            DeclareLaunchArgument(
+                "debug_image",
+                default_value="false",
+                description=(
+                    "Publish the camera detector's annotated frame on "
+                    "<detector topic>/debug_image/compressed. Costs a frame copy "
+                    "and a JPEG encode per frame"
                 ),
             ),
             DeclareLaunchArgument(
@@ -238,6 +261,7 @@ def generate_launch_description():
                         "use_sim_time": use_sim_time,
                         "from_topic": from_topic,
                         "camera_topic": camera_topic,
+                        "debug_mode": debug_mode,
                         # The ONNX exports live one folder per input size; this
                         # picks the folder, and the node rewrites infer-dims and
                         # the model/engine paths in the nvinfer config to match.
@@ -262,6 +286,7 @@ def generate_launch_description():
                         "use_sim_time": use_sim_time,
                         "from_topic": from_topic,
                         "camera_topic": camera_topic,
+                        "debug_mode": debug_mode,
                         "model_params.imgsz": ParameterValue(
                             LaunchConfiguration("fetch_imgsz"), value_type=int
                         ),
