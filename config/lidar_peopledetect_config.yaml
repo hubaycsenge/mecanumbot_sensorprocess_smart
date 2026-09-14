@@ -310,12 +310,12 @@ mecanumbot_locate_detections:
 
       # Which estimator supplies the published range:
       #   size          -- from the ball's apparent diameter. Needs only the
-      #                    lens, does not care where the camera points, and is
-      #                    the safe default because it depends on nothing that
-      #                    has to be measured on the robot.
+      #                    lens, and the RANGE it gives does not care where
+      #                    the camera points -- the height still does, see
+      #                    neck below. The safe default.
       #   ground_plane  -- where the ray meets the floor. Better close in, and
-      #                    the one to switch to once camera_z and
-      #                    camera_pitch_deg below have actually been measured.
+      #                    the one to switch to once the camera's height and
+      #                    tilt have actually been measured.
       range_source: size
 
       # Where the camera sits in the robot's base frame [m], and where the floor
@@ -327,9 +327,9 @@ mecanumbot_locate_detections:
       # centimetre below the base frame's origin.
       camera_x: 0.13
       camera_z: 0.21
-      # Positive looks UP. The neck tilts, so a tree that sweeps the head while
-      # searching either keeps this in step with the pose it commanded or stays
-      # on range_source: size, which does not care.
+      # Positive looks UP. With neck.enabled, camera_x, camera_z and this are
+      # only the fallback for a frame with no neck reading: every other frame
+      # is placed with the tilt the neck had, because the fetch tree sweeps it.
       camera_pitch_deg: 0.0
       floor_z: -0.01
       # Nearer than the first the ball is under the camera's chin; further than
@@ -338,10 +338,37 @@ mecanumbot_locate_detections:
       max_range: 6.0
       # Metres the two estimators may differ by before it is worth saying so.
       # They measure the same distance by unrelated routes, so a persistent gap
-      # is evidence that camera_z, camera_pitch_deg or diameter is wrong --
+      # is evidence that the camera's height or tilt, or diameter, is wrong --
       # which nothing else can tell you, because each estimator on its own
       # produces a perfectly plausible number from wrong inputs.
       disagreement_warn: 0.6
+
+      # Which way the neck has the camera pointing, frame by frame. Without it
+      # every frame is placed with camera_pitch_deg, and a ball on the floor
+      # seen with the head tilted down comes out about as high as the camera
+      # -- which the fetch tree reads as "not on the floor". The model is
+      # NeckMount in ball_locating.py, and its numbers are mecanumbot_deep3r's
+      # camera.*: the same servo, so change both or neither.
+      neck:
+        enabled: true
+        # OpenCRState. pos_n is the neck's GOAL in servo ticks (board units x
+        # 100): the firmware echoes the command and never reads the servo.
+        topic: opencr_state
+        # How far the newest neck reading may be behind a frame [s].
+        stale_s: 0.5
+        # The neck pivot and the pivot-to-lens lever in the base frame [m];
+        # the URDF's translations, which at level give camera_x / camera_z.
+        pivot_x: 0.1063
+        pivot_z: 0.1679
+        lever_x: 0.022
+        lever_z: 0.038
+        # The trees' neck_level_pos (6.0) in ticks, and the tilt per tick.
+        level_ticks: 600.0
+        rad_per_tick: 0.005061
+        # UNMEASURED. The lens tilt at level_ticks, positive up. To measure it,
+        # put a ball on the floor with the head at neck_level_pos:
+        # floor_pitch() in ball_locating.py turns one box of it into this.
+        pitch_at_level_deg: 0.0
 
       # Alpha-beta smoothing in the map frame. Lighter than the person tracker
       # on purpose: a ball is one cleanly-shaped unambiguous target with none of

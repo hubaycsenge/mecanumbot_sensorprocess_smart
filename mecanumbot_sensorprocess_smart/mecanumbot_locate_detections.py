@@ -26,7 +26,7 @@ import rclpy
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, ReliabilityPolicy
-from mecanumbot_msgs.msg import CamPersonDetectionArray
+from mecanumbot_msgs.msg import CamPersonDetectionArray, OpenCRState
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import (
     PoseArray,
@@ -160,6 +160,26 @@ class PersonLocateNode(Node):
         # tilt looks like, and it is otherwise invisible: each estimator on its
         # own produces a perfectly plausible number.
         self.declare_parameter("ball.disagreement_warn", 0.6)
+        # ---- which way the neck has the camera pointing (see NeckMount) ----
+        # The fetch tree sweeps the head, so one fixed camera_pitch_deg is wrong
+        # for almost every frame, and so is the ball height worked out from it:
+        # a ball on the floor seen with the head down and placed as if the
+        # camera looked level comes out as high as the camera. With this on,
+        # each frame is placed with the neck's position at the frame's stamp,
+        # and camera_x / camera_z / camera_pitch_deg are only the fallback.
+        self.declare_parameter("ball.neck.enabled", True)
+        self.declare_parameter("ball.neck.topic", "opencr_state")
+        self.declare_parameter("ball.neck.stale_s", 0.5)
+        # The same model and numbers as mecanumbot_deep3r's `camera.*`. They
+        # describe the same servo, so change both or neither.
+        self.declare_parameter("ball.neck.pivot_x", 0.1063)
+        self.declare_parameter("ball.neck.pivot_z", 0.1679)
+        self.declare_parameter("ball.neck.lever_x", 0.022)
+        self.declare_parameter("ball.neck.lever_z", 0.038)
+        self.declare_parameter("ball.neck.level_ticks", 600.0)
+        self.declare_parameter("ball.neck.rad_per_tick", 0.005061)
+        # UNMEASURED: the lens tilt at level_ticks, positive up.
+        self.declare_parameter("ball.neck.pitch_at_level_deg", 0.0)
         self.declare_parameter("ball.tracking.max_association_distance", 0.6)
         self.declare_parameter("ball.tracking.min_hits", 2)
         self.declare_parameter("ball.tracking.max_coast_time", 1.0)
@@ -288,6 +308,36 @@ class PersonLocateNode(Node):
             self.get_parameter("ball.disagreement_warn").value
         )
         self.ball_tracker = ball_locating.BallTracker(self._build_ball_config())
+        self.ball_boxes_stamp = None
+
+        # Where the neck has the camera pointing. Without this every frame is
+        # placed with the one fixed pitch above, which the fetch tree's head
+        # sweep makes wrong for almost every frame.
+        self.neck_mount = None
+        self.neck_history = None
+        if self.ball_enabled and bool(self.get_parameter("ball.neck.enabled").value):
+
+            def neck(name):
+                return float(self.get_parameter(f"ball.neck.{name}").value)
+
+            self.neck_mount = ball_locating.NeckMount(
+                pivot_x=neck("pivot_x"),
+                pivot_z=neck("pivot_z"),
+                lever_x=neck("lever_x"),
+                lever_z=neck("lever_z"),
+                level_ticks=neck("level_ticks"),
+                rad_per_tick=neck("rad_per_tick"),
+                pitch_at_level=math.radians(neck("pitch_at_level_deg")),
+            )
+            self.neck_history = ball_locating.NeckHistory(stale_s=neck("stale_s"))
+            self.neck_sub = self.create_subscription(
+                OpenCRState,
+                str(self.get_parameter("ball.neck.topic").value),
+                self.neck_callback,
+                10,
+            )
+            # Logged, as the fixed mounting is: a run should say what it assumed.
+            self.get_logger().info(self.neck_mount.describe())
 
         self.tracking_enabled = bool(self.get_parameter("tracking.enabled").value)
         self.camera_frame = str(self.get_parameter("tracking.camera_frame").value)
@@ -330,11 +380,14 @@ class PersonLocateNode(Node):
             self.ball_timer = self.create_timer(
                 1.0 / max(rate, 1.0), self.publish_balls
             )
+            # With the neck tracked, the fixed mounting is what a frame with no
+            # neck reading falls back on, and the log says which it is.
+            mounting = "fallback camera" if self.neck_mount is not None else "camera"
             self.get_logger().info(
                 f"Ball locating on: {self.camera.width:.0f}x{self.camera.height:.0f} "
                 f"at {math.degrees(self.camera.hfov):.1f} deg "
                 f"(focal {self.camera.focal_x:.0f} px), ball "
-                f"{self.ball_geometry.diameter * 100:.1f} cm, camera at x="
+                f"{self.ball_geometry.diameter * 100:.1f} cm, {mounting} at x="
                 f"{self.ball_geometry.camera_x:.2f} z={self.ball_geometry.camera_z:.2f} "
                 f"pitched {math.degrees(self.ball_geometry.camera_pitch):+.1f} deg, "
                 f"range from '{self.ball_range_source}'."
@@ -880,6 +933,20 @@ class PersonLocateNode(Node):
         with self._ball_lock:
             self.ball_boxes = self._unpack(msg)
             self.ball_received_time = self.get_clock().now()
+            # The frame's own stamp, which is what the neck is looked up at.
+            self.ball_boxes_stamp = self._stamp_seconds(msg.header.stamp)
+
+    def neck_callback(self, msg):
+        """Record where the neck was told to be, against the board's stamp."""
+        stamp = self._stamp_seconds(msg.header.stamp)
+        with self._ball_lock:
+            self.neck_history.submit(stamp, int(msg.pos_n))
+
+    def _stamp_seconds(self, stamp):
+        """Return a header stamp in seconds, or now when it was never set."""
+        if stamp.sec or stamp.nanosec:
+            return stamp.sec + stamp.nanosec * 1e-9
+        return self.get_clock().now().nanoseconds * 1e-9
 
     def person_boxes_callback(self, msg):
         """Keep this frame's person boxes, for the bearing wedges."""
@@ -943,21 +1010,25 @@ class PersonLocateNode(Node):
         with self._ball_lock:
             fresh = self._boxes_are_fresh(self.ball_received_time)
             boxes = list(self.ball_boxes) if fresh else []
+            stamp = self.ball_boxes_stamp
         if not boxes:
             return []
 
+        # One tilt for the whole message: every box in it is from one frame.
+        geometry = self._ball_geometry_at(stamp)
         measurements = []
         for centre_u, centre_v, width, height, score in boxes:
+            box = (centre_u, centre_v, width, height)
             observation = ball_locating.locate(
                 self.camera,
-                (centre_u, centre_v, width, height),
-                self.ball_geometry,
+                box,
+                geometry,
                 score=score,
                 prefer=self.ball_range_source,
             )
             if observation is None:
                 continue
-            self._check_range_agreement(observation)
+            self._check_range_agreement(observation, box, geometry)
             local = Pose(
                 position=Point(
                     x=observation.x, y=observation.y, z=observation.z
@@ -974,15 +1045,45 @@ class PersonLocateNode(Node):
             )
         return measurements
 
-    def _check_range_agreement(self, observation):
+    def _ball_geometry_at(self, stamp):
+        """
+        Return the camera geometry a frame taken at `stamp` was seen with.
+
+        The neck's position at that instant when there is one. Otherwise the
+        fixed `ball.camera_*` numbers, and said out loud: a height worked out
+        from a tilt the head did not have is exactly what made the fetch tree
+        call a ball on the floor out of reach.
+        """
+        if self.neck_mount is None:
+            return self.ball_geometry
+        with self._ball_lock:
+            ticks = self.neck_history.at(stamp)
+        if ticks is None:
+            reason = "there is no neck reading within ball.neck.stale_s of the frame"
+        else:
+            placed = self.neck_mount.geometry(self.ball_geometry, ticks)
+            if placed is not None:
+                return placed
+            reason = f"the neck reads {ticks} ticks, which is not a head position"
+        self.get_logger().warn(
+            "Placing a ball with the fixed camera pitch of "
+            f"{math.degrees(self.ball_geometry.camera_pitch):+.1f} deg because "
+            f"{reason}; its height is only as right as that pitch.",
+            throttle_duration_sec=5.0,
+        )
+        return self.ball_geometry
+
+    def _check_range_agreement(self, observation, box, geometry):
         """
         Say once when the two range estimators disagree badly.
 
         They measure the same distance by unrelated routes -- the ball's size
-        and the floor's geometry -- so agreement is evidence that the camera
-        mounting numbers are right, and a persistent gap is evidence that they
+        and the floor's geometry -- so agreement is evidence that the camera's
+        height and tilt are right, and a persistent gap is evidence that they
         are not. Neither estimator can notice this alone: each produces a
-        perfectly plausible number from wrong inputs.
+        perfectly plausible number from wrong inputs. `geometry` is the one
+        the frame was actually placed with, which with the neck tracked is not
+        the fixed `ball.camera_*`.
         """
         if self._warned_range_disagreement:
             return
@@ -992,15 +1093,29 @@ class PersonLocateNode(Node):
         if gap <= self.ball_disagreement_warn:
             return
         self._warned_range_disagreement = True
+        if self.neck_mount is not None:
+            suspect = (
+                "ball.neck.pitch_at_level_deg, or the head having moved on from "
+                "the frame"
+            )
+        else:
+            suspect = "ball.camera_z or ball.camera_pitch_deg"
+        implied = ball_locating.floor_pitch(self.camera, box, geometry)
+        implied_text = (
+            ""
+            if implied is None
+            else f" If the ball is on the floor, the camera was pitched "
+            f"{math.degrees(implied):+.1f} deg."
+        )
         self.get_logger().warn(
             f"The ball's apparent size says {observation.size_range:.2f} m and the "
             f"floor plane says {observation.ground_range:.2f} m, a gap of "
-            f"{gap:.2f} m. The two are independent, so this is most likely "
-            f"ball.camera_z ({self.ball_geometry.camera_z:.2f} m) or "
-            f"ball.camera_pitch_deg "
-            f"({math.degrees(self.ball_geometry.camera_pitch):+.1f}) not matching "
-            "the robot -- or the ball not being ball.diameter across. Published "
-            f"range is from '{self.ball_range_source}'. Reported once."
+            f"{gap:.2f} m. The two are independent, so this is most likely the "
+            f"camera's tilt ({math.degrees(geometry.camera_pitch):+.1f} deg) or "
+            f"height ({geometry.camera_z:.2f} m) not matching the robot -- check "
+            f"{suspect} -- or the ball not being ball.diameter across, or not "
+            f"on the floor.{implied_text} Published range is from "
+            f"'{self.ball_range_source}'. Reported once."
         )
 
     def publish_balls(self):

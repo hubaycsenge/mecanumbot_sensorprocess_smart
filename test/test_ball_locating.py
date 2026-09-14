@@ -24,8 +24,11 @@ from mecanumbot_sensorprocess_smart.ball_locating import (
     BallTracker,
     BallTrackerConfig,
     CameraModel,
+    NeckHistory,
+    NeckMount,
     direction,
     floor_height,
+    floor_pitch,
     graspable,
     locate,
     range_from_ground,
@@ -148,11 +151,12 @@ def test_a_ball_left_of_centre_is_placed_to_the_robots_left():
 
 def test_the_size_estimator_ignores_where_the_box_sits_in_the_frame():
     """
-    Apparent size is the estimator that does not care where the camera points.
+    Apparent size gives a range that does not care where the camera points.
 
-    That is the whole reason it is the default: the neck tilts while the robot
-    searches, and nothing keeps `camera_pitch_deg` in step with the pose the
-    tree commanded.
+    Only the range: which ray the ball is along is still the tilt's business,
+    and that is what the neck tests below are about. But a wrong tilt costs
+    this estimator a direction, and the ground estimator a direction and a
+    distance, which is why it is the default.
     """
     high = locate(HD, (640.0, 400.0, 25.0, 25.0), geometry(), prefer=SOURCE_SIZE)
     low = locate(HD, (640.0, 700.0, 25.0, 25.0), geometry(), prefer=SOURCE_SIZE)
@@ -239,6 +243,107 @@ def test_camera_pitch_tilts_the_whole_ray():
     )
     assert tilted.z < level.z
     assert tilted.x < level.x
+
+
+# --- the neck ----------------------------------------------------------------
+
+
+def floor_ball_box(camera, place, forward):
+    """
+    Return the box a ball on the floor `forward` metres ahead would make.
+
+    Seen through `place`, dead ahead so the column is the centre one. Written
+    as the forward projection rather than by running `locate` backwards, so the
+    tests below check the geometry and not just that it is self-consistent.
+    """
+    ahead = forward - place.camera_x
+    below = (place.floor_z + place.diameter / 2.0) - place.camera_z
+    distance = math.hypot(ahead, below)
+    in_frame = math.atan2(below, ahead) - place.camera_pitch
+    return (
+        camera.width / 2.0,
+        camera.height / 2.0 - camera.focal_y * math.tan(in_frame),
+        camera.focal_x * place.diameter / distance,
+        camera.focal_y * place.diameter / distance,
+    )
+
+
+def test_the_neck_at_level_puts_the_lens_where_the_fixed_numbers_do():
+    """The neck model and `BallGeometry`'s defaults describe the same camera."""
+    place = NeckMount().geometry(geometry(), 600)
+    assert place.camera_pitch == pytest.approx(0.0)
+    assert place.camera_x == pytest.approx(0.13, abs=0.005)
+    assert place.camera_z == pytest.approx(0.21, abs=0.005)
+
+
+def test_a_larger_neck_position_looks_further_up():
+    """The trees' convention: larger neck positions look further up."""
+    neck = NeckMount()
+    assert neck.pitch(600) == pytest.approx(0.0)
+    assert neck.pitch(300) < neck.pitch(600) < neck.pitch(700)
+
+
+def test_a_neck_reading_the_head_cannot_have_is_refused():
+    """The board reports 0 before its first command; that is not a head pose."""
+    assert NeckMount().geometry(geometry(), 0) is None
+
+
+def test_a_ball_on_the_floor_seen_with_the_head_down_is_on_the_floor():
+    """
+    The fetch tree's failure: a floor ball called out of reach mid-sweep.
+
+    Seen with the head tilted down and placed as if the camera looked level,
+    the ray runs level instead of down, and the ball comes out a hand's width
+    above the grabbers. Placed with the tilt the neck actually had, it is one
+    radius up.
+    """
+    place = NeckMount().geometry(geometry(), 530)
+    box = floor_ball_box(HD, place, forward=1.0)
+
+    seen = locate(HD, box, place, prefer=SOURCE_SIZE)
+    assert seen.x == pytest.approx(1.0)
+    assert floor_height(seen, place) == pytest.approx(place.diameter / 2.0)
+    assert graspable(seen, place, 0.0, 0.12)
+
+    as_if_level = locate(HD, box, geometry(), prefer=SOURCE_SIZE)
+    assert not graspable(as_if_level, geometry(), 0.0, 0.12)
+
+
+def test_floor_pitch_recovers_the_tilt_a_floor_ball_was_seen_with():
+    """
+    A ball known to be on the floor measures the camera's tilt.
+
+    That is the calibration `NeckMount.pitch_at_level` is waiting for: read
+    this at the level neck position and it is the number to set.
+    """
+    place = NeckMount().geometry(geometry(), 530)
+    box = floor_ball_box(HD, place, forward=1.0)
+    assert floor_pitch(HD, box, place) == pytest.approx(place.camera_pitch)
+
+
+def test_the_neck_history_answers_for_the_frame_not_for_now():
+    """A box arrives after the head has moved on; its frame had the older tilt."""
+    history = NeckHistory(stale_s=0.5)
+    history.submit(0.0, 300)
+    history.submit(0.3, 400)
+    history.submit(0.6, 500)
+    assert history.at(0.45) == 400
+    assert history.at(0.6) == 500
+
+
+def test_the_neck_history_refuses_frames_it_cannot_speak_for():
+    """
+    Before the first reading, or long after the last, there is no answer.
+
+    A board that stops publishing leaves a plausible last value behind, and
+    that is exactly the one not to believe.
+    """
+    history = NeckHistory(stale_s=0.5)
+    assert history.at(1.0) is None
+    history.submit(1.0, 600)
+    assert history.at(0.9) is None
+    assert history.at(1.4) == 600
+    assert history.at(1.6) is None
 
 
 # --- tracking ----------------------------------------------------------------

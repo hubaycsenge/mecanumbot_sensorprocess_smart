@@ -17,7 +17,8 @@ box width is its diameter whatever direction it is seen from -- no other object
 in this system has that property. With a pinhole model, ``range = f * D / d_px``.
 This is the primary estimator. It degrades gracefully (a ball at 4 m is about 18
 px across at 720p with a 60 degree lens, still measurable), it needs nothing but
-the lens, and it does not care where the camera is pointing.
+the lens, and the *range* does not care where the camera is pointing. The
+height does: it is that range along a ray the tilt points -- see `NeckMount`.
 
 **Ground plane.** The ball is resting on the floor, so the ray through the
 bottom of its box meets a known plane. This is the more accurate of the two
@@ -54,7 +55,8 @@ drives is testable on a machine with no robot attached.
 """
 
 import math
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
 
 # Diameter of a regulation tennis ball [m]. ITF says 6.54-6.86 cm.
 TENNIS_BALL_DIAMETER = 0.067
@@ -128,10 +130,12 @@ class BallGeometry:
     honest than a derivation nobody can check by looking at the robot -- and
     they are logged at startup so a run says what it assumed.
 
-    `camera_pitch` is positive when the camera looks **up**. The neck tilts, so
-    a tree that drives the neck while searching has to keep this in step with
-    the pose it commanded, or use the apparent-size estimator, which does not
-    care.
+    `camera_pitch` is positive when the camera looks **up**, and it is the tilt
+    of *one frame*. Neither estimator escapes it: apparent size gives how far
+    along the ray the ball is, but the ray's direction is the tilt, and so is
+    the ball's height. The neck moves, so the node rebuilds this for every frame
+    with `NeckMount.geometry`; the numbers here are the fallback for a frame
+    with no neck reading.
     """
 
     diameter: float = TENNIS_BALL_DIAMETER
@@ -147,6 +151,87 @@ class BallGeometry:
     # of pixels and the 1/d_px error swamps it.
     min_range: float = 0.15
     max_range: float = 6.0
+
+
+@dataclass(frozen=True)
+class NeckMount:
+    """
+    Where the neck puts the camera, from the neck servo's position.
+
+    The fetch tree sweeps the head while it searches, so one fixed pitch is
+    wrong for nearly every frame -- and not by a little. A ball on the floor
+    seen by a camera tilted down, and modelled as level, is placed along a ray
+    that runs level: it comes out about as high as the camera, and the fetch
+    tree decides it is not on the floor.
+
+    The model is `mecanumbot_deep3r`'s `camera_pose.NeckCamera`, with the same
+    defaults, and the two have to agree because they describe the same servo:
+    a pivot fixed on the base, a lever to the lens that turns with the head,
+    and a tilt linear in the servo's ticks::
+
+        pitch = pitch_at_level + (ticks - level_ticks) * rad_per_tick
+        lens  = pivot + R(pitch) @ lever
+
+    Pivot and lever are the URDF's translations -- the part of it written for
+    the robot rather than the meshes -- and at level they put the lens at
+    (0.128, 0.206) m, the 0.13 / 0.21 `BallGeometry` defaults to.
+    `level_ticks` is the trees' `neck_level_pos` (6.0 board units, scaled by
+    100 on the way to the servo), `rad_per_tick` is the constant
+    `mecanumbot_sensorproc_node` uses for the same servo, and
+    **`pitch_at_level` is unmeasured**: nothing establishes that the neutral
+    driving gaze is optically level. `floor_pitch` is how to measure it.
+
+    `ticks` is the neck's *goal*. The firmware echoes the last command back as
+    `OpenCRState.pos_n` and never reads the AX-12A's present position, so while
+    the head is moving this is where it is going, not where it is.
+    """
+
+    pivot_x: float = 0.1063
+    pivot_z: float = 0.1679
+    lever_x: float = 0.022
+    lever_z: float = 0.038
+    level_ticks: float = 600.0
+    rad_per_tick: float = 0.005061
+    pitch_at_level: float = 0.0
+    # Beyond this a reading is not a head position. The board reports 0 before
+    # its first command, which is -174 degrees here, and that is the case this
+    # is for; the neck's own 200..860 stays inside it.
+    max_abs_pitch: float = math.radians(120.0)
+
+    def pitch(self, ticks):
+        """Return the camera's pitch for a neck at `ticks`, positive up."""
+        return self.pitch_at_level + (float(ticks) - self.level_ticks) * self.rad_per_tick
+
+    def geometry(self, base, ticks):
+        """
+        Return `base` with the camera moved to where the neck puts it, or None.
+
+        None when the reading implies a pitch the head cannot have, so the
+        caller can say so rather than place a ball with a camera that looks
+        backwards.
+        """
+        pitch = self.pitch(ticks)
+        if not math.isfinite(pitch) or abs(pitch) > self.max_abs_pitch:
+            return None
+        c, s = math.cos(pitch), math.sin(pitch)
+        return replace(
+            base,
+            camera_x=self.pivot_x + c * self.lever_x - s * self.lever_z,
+            camera_z=self.pivot_z + s * self.lever_x + c * self.lever_z,
+            camera_pitch=pitch,
+        )
+
+    def describe(self):
+        """Return one log line saying what this model assumes."""
+        level = self.geometry(BallGeometry(), self.level_ticks)
+        return (
+            f"camera tilt from the neck: lens at ({level.camera_x:.3f}, "
+            f"{level.camera_z:.3f}) m at {self.level_ticks:.0f} ticks, pitch "
+            f"{math.degrees(self.pitch_at_level):+.1f} deg there, "
+            f"{math.degrees(self.rad_per_tick):.3f} deg per tick "
+            f"({math.degrees(self.pitch(200)):+.0f}..{math.degrees(self.pitch(860)):+.0f} "
+            "deg over the neck's 200..860)"
+        )
 
 
 @dataclass(frozen=True)
@@ -221,6 +306,38 @@ def range_from_ground(unit, geometry):
     return drop / -unit[2]
 
 
+def floor_pitch(camera, box, geometry):
+    """
+    Return the camera pitch that would put this ball on the floor, or None.
+
+    The calibration `NeckMount.pitch_at_level` is waiting for. With a ball
+    known to be on the floor, its apparent size says how far along the ray it
+    is and the floor says how far below the lens, which together fix the ray's
+    angle below horizontal; take away where the box sits in the frame and what
+    is left is the camera's tilt. Read with the head at the level neck
+    position, it is the number to set.
+
+    The lens height is `geometry`'s as it stands. A few degrees of tilt moves
+    the lens by millimetres, well inside what one pixel of box jitter does to
+    the range.
+    """
+    centre_u, centre_v, width_px, height_px = box
+    distance = range_from_size(camera, width_px, height_px, geometry.diameter)
+    if distance is None:
+        return None
+    drop = (geometry.floor_z + geometry.diameter / 2.0) - geometry.camera_z
+    # `direction` makes the ray's vertical part a*sin(pitch) + b*cos(pitch),
+    # which is one arcsine once a and b are folded into a single angle.
+    bearing = camera.bearing(centre_u)
+    elevation = camera.elevation(centre_v)
+    a = math.cos(elevation) * math.cos(bearing)
+    b = math.sin(elevation)
+    ratio = drop / (distance * math.hypot(a, b))
+    if abs(ratio) > 1.0:
+        return None
+    return math.asin(ratio) - math.atan2(b, a)
+
+
 def locate(camera, box, geometry, score=0.0, prefer=SOURCE_SIZE):
     """
     Place one ball box in the robot's base frame, or return None.
@@ -292,6 +409,44 @@ def _in_band(distance, geometry):
         distance is not None
         and geometry.min_range <= distance <= geometry.max_range
     )
+
+
+class NeckHistory:
+    """
+    The neck's recent positions, so a frame is placed with the tilt it had.
+
+    The fetch tree moves the head every few tenths of a second while it
+    searches, and a ball box arrives after the network has run on its frame,
+    so the neck's *latest* position is often not the one the frame was taken
+    with. This answers for a stamp instead: the newest reading at or before it.
+
+    It refuses rather than guesses in two cases, the rule `mecanumbot_deep3r`'s
+    `NeckTracker` follows. A stamp older than everything kept belongs to a
+    frame whose reading is gone. And a newest reading more than `stale_s`
+    behind the stamp is a board that has stopped publishing, which leaves a
+    plausible last value behind -- the one not to believe.
+    """
+
+    def __init__(self, stale_s=0.5, depth=256):
+        self.stale_s = float(stale_s)
+        self._readings = deque(maxlen=int(depth))
+
+    def submit(self, stamp, ticks):
+        """Record that the neck was at `ticks` from `stamp` [s] on."""
+        if self._readings and stamp < self._readings[-1][0]:
+            # The clock stepped back -- a restarted sim, the Jetson correcting
+            # its clock -- and nothing kept is comparable with what follows.
+            self._readings.clear()
+        self._readings.append((float(stamp), int(ticks)))
+
+    def at(self, stamp):
+        """Return the neck's ticks at `stamp` [s], or None."""
+        for reading_stamp, ticks in reversed(self._readings):
+            if reading_stamp <= stamp:
+                if stamp - reading_stamp > self.stale_s:
+                    return None
+                return ticks
+        return None
 
 
 # --- tracking ---------------------------------------------------------------

@@ -863,10 +863,15 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 | `ball.diameter`                     | `0.067` | A regulation tennis ball [m]. Every apparent-size range scales with it. |
 | `ball.range_source`                 | `size`  | `size` or `ground_plane` — which estimator supplies the published range. |
 | `ball.camera_x` / `ball.camera_z`   | `0.13` / `0.21` | Where the camera is in the base frame [m]. **Measure these**, see below. |
-| `ball.camera_pitch_deg`             | `0.0`   | Positive looks up. |
+| `ball.camera_pitch_deg`             | `0.0`   | Positive looks up. With `ball.neck.enabled`, only the fallback for a frame with no neck reading, like `camera_x` / `camera_z`. |
 | `ball.floor_z`                      | `-0.01` | The floor in the base frame; `base_link` sits 0.01 m above `base_footprint`. |
 | `ball.min_range` / `ball.max_range` | `0.15` / `6.0` | Outside this band a range is not believed and nothing is published. |
 | `ball.disagreement_warn`            | `0.6`   | Metres the two estimators may differ by before it is worth a one-off warning. |
+| `ball.neck.enabled`                 | `true`  | Place each frame with the neck's tilt at the frame's stamp, not one fixed pitch. |
+| `ball.neck.topic` / `ball.neck.stale_s` | `opencr_state` / `0.5` | Where the neck position comes from, and how far behind a frame it may be [s]. |
+| `ball.neck.pivot_x` / `_z`, `ball.neck.lever_x` / `_z` | `0.1063` / `0.1679`, `0.022` / `0.038` | The neck pivot and the pivot-to-lens lever in the base frame [m]. |
+| `ball.neck.level_ticks` / `ball.neck.rad_per_tick` | `600.0` / `0.005061` | Servo ticks of the trees' `neck_level_pos`, and tilt per tick. |
+| `ball.neck.pitch_at_level_deg`      | `0.0`   | **Unmeasured.** Lens tilt at `level_ticks`, positive up. |
 | `ball.tracking.*`                   | — | Alpha-beta smoothing in the map frame; see `ball_locating.py`. |
 | `person_boxes.enabled`              | `true`  | Accept person evidence from the fetch detector as well as the pose one. |
 | `person_boxes.topic`                | `cam_people_boxes` | Where those boxes come from. |
@@ -971,15 +976,16 @@ camera has. The geometry is `ball_locating.py`; the node is the ROS end of it.
 0.067 m across and is round, so its box width is its diameter whatever direction it is
 seen from — no other object in this system has that property. With a pinhole model,
 `range = f · D / d_px`. It degrades gracefully (a ball at 4 m is about 18 px across at
-720p through a 60° lens, still measurable), it needs nothing but the lens, and **it does
-not care where the camera is pointing** — which matters, because the fetch tree sweeps
-the neck while it searches and nothing tells this node what the tilt currently is.
+720p through a 60° lens, still measurable), it needs nothing but the lens, and **the
+range does not care where the camera is pointing**. The *position* does: the range is a
+length along the ray through the box, and which way that ray runs — and so how high the
+ball is — is the camera's tilt. See "The tilt comes from the neck" below.
 
 **Ground plane** (`ball.range_source: ground_plane`). The ball rests on the floor, so
 its ray meets a known plane — solved for one radius above the floor, since that is where
 the ball's centre is. More accurate close in, worthless near the horizon where a small
-elevation error is a large range error, and it depends on `ball.camera_z` and
-`ball.camera_pitch_deg` being right. Switch to it once those have actually been
+elevation error is a large range error, and it depends on the camera's height and tilt
+being right. Switch to it once `ball.neck.pitch_at_level_deg` has actually been
 measured.
 
 Both are computed whenever they can be, one is published, and a persistent disagreement
@@ -996,6 +1002,24 @@ neither is an x-forward, z-up frame and neither gives the camera's height above 
 floor without unpicking two rotations that were written for the meshes. Two measured
 numbers are more honest than a derivation nobody can check by looking at the robot —
 and they are logged at startup, so a run says what it assumed.
+
+**The tilt comes from the neck, frame by frame** (`ball.neck.*`). The fetch tree sweeps
+the head while it searches, so one fixed `camera_pitch_deg` is wrong for nearly every
+frame, and a wrong tilt is not a small error: a ball on the floor seen with the head
+down, placed as if the camera looked level, comes out about as high as the camera, and
+the fetch tree's `CheckBallReachable` calls it out of reach. So each frame is placed
+with the neck position in effect at the frame's stamp (`NeckHistory`), through the same
+pivot-and-lever model `mecanumbot_deep3r` uses for the same servo (`NeckMount`). The
+fixed `ball.camera_*` numbers are only the fallback — with a throttled warning — for a
+frame that has no neck reading within `ball.neck.stale_s`. Two things to know:
+
+- **`ball.neck.pitch_at_level_deg` is unmeasured.** Nothing establishes that the trees'
+  `neck_level_pos` (6.0) is optically level. With a ball on the floor and the head
+  there, `floor_pitch` in `ball_locating.py` turns one box into the number to set.
+- **The neck position is the servo's goal, not the servo.** The firmware echoes the last
+  command back as `OpenCRState.pos_n` and never reads the AX-12A, so while the head is
+  moving a frame is placed with where the head was going. Heights read mid-sweep are
+  less trustworthy than heights read with the head still.
 
 **The published `z` is the point.** The grabbers are a horizontal pincer whose shafts
 sit at about z = 0.034 with a 0.116 m clear gap, and there is no lift, so a ball on a
