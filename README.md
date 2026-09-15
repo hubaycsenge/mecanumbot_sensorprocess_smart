@@ -30,8 +30,8 @@ balls, and a plain detector has no skeletons, so the ostensive gestures are unav
 while it is the one in use. `mecanumbot_locate_detections` accepts person evidence from
 either kind, so `people_fusion` keeps flowing whichever is up.
 
-The two pose variants additionally publish the ROS4HRI (REP-155) `/humans/bodies` tree;
-see [ROS4HRI (REP-155) output](#ros4hri-rep-155-output).
+The DeepStream pose variant additionally publishes the ROS4HRI (REP-155) `/humans/bodies`
+tree (the Ultralytics one does not); see [ROS4HRI (REP-155) output](#ros4hri-rep-155-output).
 
 ## Pipeline
 
@@ -84,11 +84,13 @@ detector it needs:
 | Argument | Default | Function |
 | --- | --- | --- |
 | `namespace` | `mecanumbot` | Namespace the perception nodes run in. |
+| `use_sim_time` | `false` | Use the sim clock. |
 | `detector` | `pose` | `pose` (DeepStream skeletons) \| `fetch` (DeepStream people **and balls**) \| `none` (LiDAR only). |
 | `use_lidar_people` | `true` | Run DR-SPAAM on the scan. |
 | `use_camera` | `false` | See below — this is a choice, not a flag. |
 | `camera_topic` | `/camera/image_raw/compressed` | Where the frames are published and read. Absolute on purpose. |
-| `camera_width` / `camera_height` | `1280` / `720` | The frame size, for **all three** of camera, detector and fusion. |
+| `debug_image` | `false` | Sets `debug_mode` on whichever camera detector runs, so it publishes its annotated frame. |
+| `camera_width` / `camera_height` | `1280` / `720` | The frame size, for the detector **and** the fusion. The camera publisher is not started here, so give it the same size by hand. |
 | `camera_fps`, `jpeg_quality` | `15.0`, `80` | Declared but **unused**: they went to the camera include, which is commented out. |
 | `yolo_imgsz` / `yolo_model` | `1280` / `yolo26m-pose` | The pose model. |
 | `fetch_imgsz` / `fetch_model` | `640` / `yolo26m` | The fetch model. |
@@ -120,13 +122,16 @@ ros2 launch mecanumbot_camera_stream camera_compressed.launch.py width:=1280 hei
 ```
 
 Its backend defaults to `usb`: the camera is a USB webcam, and `csi`
-(`nvarguscamerasrc`) cannot open it. The one launch file that still starts the camera
-is `mecanumbot_autoslam`'s `launch_autoslam.launch.py`, for T1.
+(`nvarguscamerasrc`) cannot open it. Apart from the camera's own launch files (and
+`mecanumbot_bringup`'s `camera.launch.py`, a wrapper over the same one), the one launch
+file that still starts the camera is `mecanumbot_autoslam`'s `launch_autoslam.launch.py`,
+for T1.
 
 ### One frame size, three nodes
 
-`camera_width` / `camera_height` go to the camera publisher, to the detector and to the
-fusion node together. All three had their own copy before and nothing compared them —
+`camera_width` / `camera_height` go to the detector and to the fusion node together;
+since the camera include was commented out, the camera publisher has to be given the same
+size by hand (`width:=` / `height:=`, as above). All three had their own copy before and nothing compared them —
 but every bearing and every apparent-size range is computed from the frame size, so a
 disagreement is not a warning, it is silently wrong numbers. (`camera_compressed.launch.py`
 declared `width`/`height` arguments and then dropped them on the floor; that is fixed,
@@ -346,7 +351,7 @@ ROS node name: `mecanumbot_cam_detect_people_ds`.
 | `webcam_device`               | `/dev/video0`                 | V4L2 device used in webcam mode.                                                      |
 | `debug_mode`                  | `false`                       | Enables the annotated debug image publisher.                                          |
 | `keypoint_scaling`            | `auto`                        | How to invert the `nvinfer` input resize: `letterbox`, `stretch`, or `auto`.           |
-| `model_params.imgsz`          | `1280`                        | Input size the pose model expects; selects `models/imgsz_<n>/`.                       |
+| `model_params.imgsz`          | `640`                         | Input size the pose model expects; selects `models/imgsz_<n>/`. `perception.launch.py` sets it from `yolo_imgsz` (default `1280`). |
 | `model_params.model_name`     | `yolo26m-pose`                | Model stem inside that folder.                                                        |
 | `model_params.precision`      | `fp16`                        | Engine precision; part of the engine filename, must match `network-mode`.             |
 | `model_params.models_dir`     | `''`                          | Where the `imgsz_<n>` folders live; empty means the package share `models/`.           |
@@ -512,11 +517,13 @@ bound_angle_max == 0.0`, which `mecanumbot_locate_detections` reads as a person 
 ahead.
 
 The logic lives in `person_gating.py`, kept free of ROS, DeepStream and NumPy so it can
-be unit-tested off the Jetson — `test/test_person_gating.py` is the only real test in
-this package, and it runs without a ROS graph:
+be unit-tested off the Jetson — `test/test_person_gating.py` runs without a ROS graph, as
+do the package's other unit tests (see *File functions*). The sourced ROS 2 environment's
+`launch_testing` pytest plugins break collection, so disable them:
 
 ```bash
-python3 -m pytest src/mecanumbot_sensorprocess_smart/test/test_person_gating.py -v
+python3 -m pytest src/mecanumbot_sensorprocess_smart/test/test_person_gating.py -v \
+    -p no:launch_testing -p no:launch_testing_ros
 ```
 
 Tuning: run with `debug_mode` enabled and watch
@@ -750,6 +757,9 @@ is.
 | `model_params.models_dir` | `''` | Empty means the package share `models/`. |
 | `model_params.custom_lib_path` | `''` | Where **DeepStream-Yolo** was built, `~`/`$USER` expanded. Empty searches the config's path, then `~/deepstream_source` and `~/Documents/installed_external`. |
 | `model_params.nvinfer_config` | `''` | A complete config to hand nvinfer untouched; disables all substitution. |
+| `from_topic` | `false` | `true` pushes ROS frames into an `appsrc`, `false` uses `v4l2src` on `webcam_device`. |
+| `camera_topic` | `camera/image_raw/compressed` | Compressed image input topic. |
+| `webcam_device` | `/dev/video0` | V4L2 device used in webcam mode. |
 | `classes.person_id` / `classes.ball_id` | `0` / `32` | COCO numbering for the shipped model. |
 | `classes.person_label` / `classes.ball_label` | `person` / `sports ball` | What travels downstream — a numeric id means nothing once the detection has left the camera. |
 | `classes.person_topic` / `classes.ball_topic` | `cam_people_boxes` / `cam_ball_boxes` | Where each class is published. |
@@ -809,9 +819,10 @@ cd ~/deepstream_source/DeepStream-Yolo   # or ~/Documents/installed_external/Dee
 CUDA_VER=12.6 make -C nvdsinfer_custom_impl_Yolo   # CUDA_VER = the installed CUDA
 ```
 
-**`yolo26m.pt` is not among the shipped model files** -- only the pose checkpoints and
-`yolo26n.pt` are. Fetch it (ultralytics downloads it on first use) and export it before
-this node can run:
+**There is no 640 export of `yolo26m` among the shipped model files** -- `yolo26m.pt`
+ships, and so does `models/imgsz_1280/yolo26m.onnx`, but `models/imgsz_640/` holds only
+the pose exports, and 640 is this node's default (`fetch_imgsz`). Export it before this
+node can run at that size:
 
 ```bash
 # in the package's models/ folder, on a machine with ultralytics
@@ -838,7 +849,7 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 | Topic                   | Data type                                     | Processing                                                             |
 | ----------------------- | --------------------------------------------- | ---------------------------------------------------------------------- |
 | `cam_people_detections` | `mecanumbot_msgs/msg/CamPersonDetectionArray` | Receives camera detections for fusion (own callback group).            |
-| `dets`                  | `geometry_msgs/msg/PoseArray`                 | Receives LiDAR people detections; each message triggers a fusion pass. |
+| `dets`                  | `geometry_msgs/msg/PoseArray`                 | Receives LiDAR people detections; each message triggers a fusion pass. Relative and not remapped by `perception.launch.py`, while the shipped YAML has the LiDAR node publish on `dr_spaam/dets`. |
 | `scan`                  | `sensor_msgs/msg/LaserScan`                   | Stores the current scan for range extrapolation.                       |
 | `/map`                  | `nav_msgs/msg/OccupancyGrid`                  | Loads the static map grid (TRANSIENT_LOCAL QoS).                       |
 | `/amcl_pose`            | `geometry_msgs/msg/PoseWithCovarianceStamped` | Tracks the robot pose in map coordinates.                              |
@@ -1119,23 +1130,30 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 | test/test_ball_locating.py                                             | Unit tests for the ball geometry and its tracker; run without a ROS graph. |
 | test/test_person_tracking.py                                           | Unit tests for the map-frame tracker; run without a ROS graph.       |
 | test/test_lidar_tracking.py                                            | Unit tests for the DR-SPAAM tracker; run without ROS, torch or `dr_spaam`. |
-| launch/perception.launch.py                                            | The pipeline: DR-SPAAM, one camera detector, the fusion, and optionally the camera itself. Included by every behaviour launch file. |
+| test/test_nvinfer_config.py                                            | Unit tests for where an nvinfer config's parser library and relative paths resolve; run without ROS or DeepStream. |
+| launch/perception.launch.py                                            | The pipeline: DR-SPAAM, one camera detector and the fusion. Does not start the camera. Included by every behaviour launch file. |
 | launch/mecanumbot_peopledetect.launch.py                               | Thin wrapper over `perception.launch.py` under its older name, for a run with no tree. |
 | config/lidar_peopledetect_config.yaml                                  | Runtime ROS parameters for node topics and thresholds.               |
+| param/lidar_peopledetect_config.yaml                                   | An older, 8-line copy of the LiDAR node's parameters. Not installed by `setup.py` and not read by any launch file. |
 | models/dr_spaam_5_on_frog.pth                                          | DR-SPAAM pretrained weights used by the LiDAR detector.              |
 | models/dr_spaam.onnx                                                   | ONNX export of the DR-SPAAM model.                                   |
 | models/yolo26{n,s,m}-pose.pt                                           | YOLO pose checkpoints; size-independent, used by the Ultralytics camera detector. |
+| models/yolo26{n,m}.pt                                                  | Plain (COCO) YOLO checkpoints; `yolo26m` is exported for the fetch detector. |
 | models/imgsz_640/, models/imgsz_1280/                                  | ONNX exports and their TensorRT engines, one folder per input size; `model_params.imgsz` selects one. |
 | models/conv_to_onnx.py                                                 | Exports a checkpoint to ONNX at a given `imgsz`, into that size's folder. |
 | models/build_engine.py                                                 | Builds the TensorRT engine for an ONNX under the name `nvinfer` looks for. |
 | deepstream_config/config_infer_yolo26_pose.txt                         | Template `nvinfer` configuration; the node renders a copy per model and size. |
-| deepstream_config/labels.txt                                           | Class label file referenced by the `nvinfer` config.                 |
+| deepstream_config/config_infer_yolo26_det.txt                          | Template `nvinfer` configuration for the fetch detector.             |
+| deepstream_config/labels.txt                                           | Class label file (`person`) referenced by the pose `nvinfer` config. |
+| deepstream_config/labels_coco.txt                                      | The 80 COCO class labels, referenced by the fetch `nvinfer` config.  |
 
-The YAML file carries the LiDAR node's parameters, the gate and ROS4HRI blocks for the
-DeepStream camera node (under its ROS node name, `mecanumbot_cam_detect_people_ds`) and
-the fusion node's tracking block (under `mecanumbot_locate_detections`); the Ultralytics
-camera and tennis nodes rely on their in-code defaults unless overridden on the command
-line or in the launch file.
+The YAML file carries the LiDAR node's parameters, the gate, model and ROS4HRI blocks for
+the DeepStream pose node (under its ROS node name, `mecanumbot_cam_detect_people_ds`), the
+model, class and gate blocks for the fetch detector (under
+`mecanumbot_cam_detect_objects_ds`) and the fusion node's tracking, camera, ball and
+person-box blocks (under `mecanumbot_locate_detections`); the Ultralytics camera and
+tennis nodes rely on their in-code defaults unless overridden on the command line or in
+the launch file.
 
 ## Build and run
 
@@ -1179,6 +1197,7 @@ ros2 topic echo /humans/bodies/<id>/skeleton2d
 ```
 
 ROS packages are declared in `package.xml` (including `hri_msgs` and `vision_msgs`), so
-`rosdep` covers them. The plain-Python and NVIDIA dependencies (`torch`, `ultralytics`, `opencv-python`,
+`rosdep` covers them — except `cv_bridge`, which the Ultralytics detector imports but
+`package.xml` does not list. The plain-Python and NVIDIA dependencies (`torch`, `ultralytics`, `opencv-python`,
 `scipy`, `filterpy`, `transforms3d`, `dr_spaam`, and `pyds`/`gi` for the DeepStream node)
 are not, so those still have to be installed by hand.
