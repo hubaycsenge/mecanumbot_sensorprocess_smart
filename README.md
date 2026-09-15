@@ -72,7 +72,7 @@ detector it needs:
 
 | Launch | detector | `use_camera` |
 | --- | --- | --- |
-| `mecanumbot_leading_behaviour` | `pose` | **true** — a leading trial is scored afterwards from what the robot could see |
+| `mecanumbot_leading_behaviour` | `pose` | **true** — a leading trial is scored afterwards from what the robot could see. **Start the camera by hand** (below). |
 | `mecanumbot_ostensive_behaviour` | `pose` | false |
 | `mecanumbot_seek` | `pose` (for the alert's audience) | false |
 | `mecanumbot_fetch_behaviour` | `fetch` | false |
@@ -89,7 +89,7 @@ detector it needs:
 | `use_camera` | `false` | See below — this is a choice, not a flag. |
 | `camera_topic` | `/camera/image_raw/compressed` | Where the frames are published and read. Absolute on purpose. |
 | `camera_width` / `camera_height` | `1280` / `720` | The frame size, for **all three** of camera, detector and fusion. |
-| `camera_fps`, `jpeg_quality` | `15.0`, `80` | Only used when `use_camera` is true. |
+| `camera_fps`, `jpeg_quality` | `15.0`, `80` | Declared but **unused**: they went to the camera include, which is commented out. |
 | `yolo_imgsz` / `yolo_model` | `1280` / `yolo26m-pose` | The pose model. |
 | `fetch_imgsz` / `fetch_model` | `640` / `yolo26m` | The fetch model. |
 
@@ -98,13 +98,30 @@ detector it needs:
 The camera can only be opened once, so this is a choice between two things you might
 want and cannot both have for free:
 
-* **false** — the DeepStream detector opens the camera itself through
-  `nvarguscamerasrc`. Cheapest path: no JPEG encode, no decode, no topic. But nothing
-  else can have the camera, so **there is no `/camera/image_raw/compressed`** for a
-  recording, the web GUI, or an operator to look at.
-* **true** — `mecanumbot_camera_stream`'s compressed publisher owns the camera and the
-  detector subscribes to its topic. That costs a JPEG encode on the publisher and a
-  decode in the detector. It is what the leading experiment runs with.
+* **false** — the DeepStream detector opens the camera itself: `v4l2src` on
+  `webcam_device` (`/dev/video0`, the robot's USB webcam). Cheapest path: no JPEG
+  encode, no decode, no topic. But nothing else can have the camera, so **there is no
+  `/camera/image_raw/compressed`** for a recording, the web GUI, or an operator to
+  look at.
+* **true** — the detector subscribes to `camera_topic` instead of opening the camera.
+  That costs a JPEG encode on the publisher and a decode in the detector. It is what
+  the leading experiment runs with.
+
+**`use_camera:=true` does not start the camera.** It used to include
+`mecanumbot_camera_stream`'s `camera_compressed.launch.py`; since 2026-09-10
+(`2f7aade`, "remove stray camera launch") that include is commented out, so the flag
+only sets the detector's `from_topic`. Nothing in any behaviour launch publishes
+`/camera/image_raw/compressed` any more — without a publisher started by hand, a
+`use_camera:=true` run has a detector that never gets a frame and no image topic to
+record. Start it before the behaviour:
+
+```bash
+ros2 launch mecanumbot_camera_stream camera_compressed.launch.py width:=1280 height:=720
+```
+
+Its backend defaults to `usb`: the camera is a USB webcam, and `csi`
+(`nvarguscamerasrc`) cannot open it. The one launch file that still starts the camera
+is `mecanumbot_autoslam`'s `launch_autoslam.launch.py`, for T1.
 
 ### One frame size, three nodes
 
@@ -1132,7 +1149,9 @@ ros2 launch mecanumbot_sensorprocess_smart perception.launch.py
 # ... with the fetch detector instead of the pose one, so balls are found too
 ros2 launch mecanumbot_sensorprocess_smart perception.launch.py detector:=fetch
 
-# ... and with the camera published for a recording, which the detector then reads
+# ... with the detector reading the camera topic instead of the device. This does
+# NOT start the camera (see `use_camera` above) -- start the publisher first
+ros2 launch mecanumbot_camera_stream camera_compressed.launch.py width:=1280 height:=720
 ros2 launch mecanumbot_sensorprocess_smart perception.launch.py use_camera:=true
 
 # the older name still works; it is a wrapper over the same file

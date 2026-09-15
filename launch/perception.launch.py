@@ -40,15 +40,23 @@ dependency cycle. Depending on the perception package instead does not.
 The camera can only be opened once, so this is a choice and not a flag.
 
 * **false** (the default) -- the DeepStream detector opens the camera itself
-  through `nvarguscamerasrc`. Cheapest path: no JPEG encode, no decode, no
-  topic. But nothing else can have the camera, so **there is no
+  (`v4l2src` on `/dev/video0`, the USB webcam). Cheapest path: no JPEG encode,
+  no decode, no topic. But nothing else can have the camera, so **there is no
   `/camera/image_raw/compressed`** for a recording, the web GUI or an operator
   to look at.
-* **true** -- `mecanumbot_camera_stream`'s compressed publisher owns the camera
-  and the detector subscribes to its topic. That costs a JPEG encode on the
-  publisher and a decode in the detector, and it is what the leading experiment
-  runs with, because a trial that is not recorded from the robot's own point of
-  view is a trial that cannot be scored afterwards.
+* **true** -- the detector subscribes to `camera_topic`. That costs a JPEG
+  encode on the publisher and a decode in the detector, and it is what the
+  leading experiment runs with, because a trial that is not recorded from the
+  robot's own point of view is a trial that cannot be scored afterwards.
+
+**`use_camera:=true` does not start the camera.** The include of
+`mecanumbot_camera_stream`'s `camera_compressed.launch.py` is commented out
+(2f7aade, 2026-09-10), so this file starts no publisher: with nothing started by
+hand the detector never gets a frame. Start it first:
+
+    ros2 launch mecanumbot_camera_stream camera_compressed.launch.py width:=1280 height:=720
+
+`camera_fps` and `jpeg_quality` are still declared but went only to that include.
 
 ## One frame size, three nodes
 
