@@ -77,9 +77,10 @@ refused ones in red with the check they failed:
 * `pose`  -> `/<namespace>/cam_people_detections/debug_image/compressed`
 * `fetch` -> `/<namespace>/cam_object_detections/debug_image/compressed`
 
-It is the only way to see the camera when `use_camera` is false. It costs a
-copy of the frame out of GPU memory and a JPEG encode per frame, so it is off
-unless a launch asks for it.
+It is the only way to see the camera when `use_camera` is false, and it is
+**on by default**, so that what the robot saw during a behaviour can be
+surveyed afterwards from a recording. It costs a copy of the frame out of GPU
+memory and a JPEG encode per frame; `debug_image:=false` saves both.
 """
 
 import os
@@ -182,7 +183,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "debug_image",
-                default_value="false",
+                default_value="true",
                 description=(
                     "Publish the camera detector's annotated frame on "
                     "<detector topic>/debug_image/compressed. Costs a frame copy "

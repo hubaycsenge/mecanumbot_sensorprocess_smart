@@ -28,11 +28,25 @@ import math
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+from mecanumbot_sensorprocess_smart.debug_overlay import (
+    COLOUR_BALL,
+    COLOUR_REJECTED,
+    draw_box,
+    encode_jpeg,
+)
+
+# COCO class and confidence a box has to reach to count as a ball.
+SPORTS_BALL = 32
+BALL_CONF = 0.5
+
 
 class TennisBallNode(Node):
     def __init__(self):
         super().__init__("mecanumbot_cam_detect_tennis")
         # Parameters
+        # The only one declared: everything else here is hard-coded.
+        self.declare_parameter("debug_mode", False)
+        self.debug_mode = bool(self.get_parameter("debug_mode").value)
 
         self.camera_width = 640.0
         self.camera_fov = math.radians(
@@ -73,6 +87,11 @@ class TennisBallNode(Node):
             ),
         )
         self.time_publisher = self.create_publisher(Int32, "tennis_ball_info", 10)
+        self.debug_image_pub = None
+        if self.debug_mode:
+            self.debug_image_pub = self.create_publisher(
+                CompressedImage, "tennis_ball_info/debug_image/compressed", 10
+            )
         self.get_logger().info(
             "TennisBallNode initialized and subscribed to camera/image_raw/compressed"
         )
@@ -97,11 +116,12 @@ class TennisBallNode(Node):
             )
 
             # 32: sports ball
-            balls = [
-                x
-                for x in results[0].boxes
-                if int(x.cls[0]) == 32 and float(x.conf[0]) > 0.5
+            candidates = [
+                x for x in results[0].boxes if int(x.cls[0]) == SPORTS_BALL
             ]
+            balls = [x for x in candidates if float(x.conf[0]) > BALL_CONF]
+            if self.debug_mode:
+                self._publish_debug(cv_image, candidates, msg.header)
 
             # Thread-safe update of state
             with self.state_lock:
@@ -122,6 +142,36 @@ class TennisBallNode(Node):
         finally:
             with self.state_lock:
                 self.processing_frame = False
+
+    def _publish_debug(self, cv_image, candidates, header):
+        """
+        Publish the frame with every sports-ball box on it.
+
+        Boxes that count as a ball are yellow; those under the confidence
+        threshold are red, so a ball the node keeps missing is visible as one it
+        found and refused.
+        """
+        debug_img = cv_image.copy()
+        for box in candidates:
+            score = float(box.conf[0])
+            accepted = score > BALL_CONF
+            label = f"sports ball {score:.2f}"
+            if not accepted:
+                label += f" conf<{BALL_CONF}"
+            draw_box(
+                debug_img,
+                box.xyxy[0].cpu().numpy(),
+                COLOUR_BALL if accepted else COLOUR_REJECTED,
+                label,
+            )
+        data = encode_jpeg(debug_img)
+        if data is None:
+            return
+        msg = CompressedImage()
+        msg.header = header
+        msg.format = "jpeg"
+        msg.data = data
+        self.debug_image_pub.publish(msg)
 
     def destroy_node(self):
         """Clean up thread pool before destroying node"""

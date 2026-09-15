@@ -89,7 +89,7 @@ detector it needs:
 | `use_lidar_people` | `true` | Run DR-SPAAM on the scan. |
 | `use_camera` | `false` | See below — this is a choice, not a flag. |
 | `camera_topic` | `/camera/image_raw/compressed` | Where the frames are published and read. Absolute on purpose. |
-| `debug_image` | `false` | Sets `debug_mode` on whichever camera detector runs, so it publishes its annotated frame. |
+| `debug_image` | `true` | Sets `debug_mode` on whichever camera detector runs, so it publishes its annotated frame. On by default so a behaviour's view can be surveyed; `false` saves a frame copy and a JPEG encode per frame. |
 | `camera_width` / `camera_height` | `1280` / `720` | The frame size, for the detector **and** the fusion. The camera publisher is not started here, so give it the same size by hand. |
 | `camera_fps`, `jpeg_quality` | `15.0`, `80` | Declared but **unused**: they went to the camera include, which is commented out. |
 | `yolo_imgsz` / `yolo_model` | `1280` / `yolo26m-pose` | The pose model. |
@@ -287,6 +287,7 @@ latency and duty cycle, which is the quickest way to confirm the saving on hardw
 | Topic                   | Data type                                     | Function                                                                                                        |
 | ----------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `cam_people_detections` | `mecanumbot_msgs/msg/CamPersonDetectionArray` | Publishes detected people with pose keypoints and angular bounds, stamped in the `<namespace>/head_link` frame. |
+| `cam_people_detections/debug_image/compressed` | `sensor_msgs/msg/CompressedImage` | Every person the model found, with box, skeleton and per-joint confidences; a box that did not become a message is red, `not published`. Only when `debug_mode` is true. |
 
 ### Subscribers
 
@@ -306,6 +307,7 @@ latency and duty cycle, which is the quickest way to confirm the saving on hardw
 | `camera_topic`                   | `camera/image_raw/compressed` | Compressed image input topic.                                                |
 | `webcam_device`                  | `/dev/video0`                 | V4L2 device used in webcam mode.                                             |
 | `img_process_params.weight_file` | `yolo26n-pose.pt`             | Pose model, resolved inside the package share `models/` folder.              |
+| `debug_mode`                     | `false`                       | Publishes the annotated frame. Costs a frame copy and a JPEG encode per frame. |
 
 ### Behavior
 
@@ -317,7 +319,12 @@ latency and duty cycle, which is the quickest way to confirm the saving on hardw
   that do not yield exactly 17 keypoints are skipped.
 - Left/right angular bounds are computed from the minimum and maximum keypoint x, and
   are only filled once an AMCL pose has been received. In topic mode no frame is
-  processed at all until `/amcl_pose` arrives.
+  processed at all until `/amcl_pose` arrives — and so no debug image either.
+- **Only the first person in a frame is published**: the loop reads keypoint set 0 of
+  each result, and a frame is one result. The debug image draws the others red and
+  labelled `not published`.
+- The debug image carries the input frame's stamp in topic mode, and the node's clock
+  in webcam mode.
 
 ## Node: mecanumbot_onboard_cam_detect_people
 
@@ -1089,6 +1096,7 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 | Topic              | Data type            | Function                                                             |
 | ------------------ | -------------------- | -------------------------------------------------------------------- |
 | `tennis_ball_info` | `std_msgs/msg/Int32` | Publishes the number of seconds since the last tennis ball was seen. |
+| `tennis_ball_info/debug_image/compressed` | `sensor_msgs/msg/CompressedImage` | Every sports-ball box: yellow above the 0.5 threshold, red below it. Carries the input frame's header. Only when `debug_mode` is true. |
 
 ### Subscribers
 
@@ -1104,7 +1112,8 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
   a backlog; frames arriving while one is in flight are dropped.
 - Tracks the time since the last positive tennis-ball detection and publishes it as an
   integer.
-- Configuration is hard-coded — this node declares no ROS parameters. It also loads
+- Configuration is hard-coded — the only ROS parameter is `debug_mode` (default
+  `false`), which publishes the annotated frame. It also loads
   `yolov8n.pt`, which is **not** among the shipped model files; drop that checkpoint
   into `models/` before running it.
 
@@ -1121,6 +1130,7 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 | mecanumbot_sensorprocess_smart/object_gating.py                        | Shape, hysteresis and temporal gate for the keypoint-free detector.  |
 | mecanumbot_sensorprocess_smart/ball_locating.py                        | Pinhole camera model, the two ball range estimators, and the map-frame ball tracker. |
 | mecanumbot_sensorprocess_smart/mecanumbot_detect_tennis.py             | Tennis ball detection node.                                          |
+| mecanumbot_sensorprocess_smart/debug_overlay.py                        | Box and skeleton drawing for the Ultralytics detectors' debug images, in the DeepStream nodes' colours; also holds the skeleton connections. |
 | mecanumbot_sensorprocess_smart/ros4hri_bridge.py                       | ROS4HRI conversion, body ID tracking and `/humans/bodies` publishing. |
 | mecanumbot_sensorprocess_smart/person_gating.py                        | Keypoint-evidence, hysteresis and temporal gate for camera detections. |
 | mecanumbot_sensorprocess_smart/person_tracking.py                      | Map-frame constant-velocity tracking of the fused detections, and the camera blind zone. |
@@ -1130,6 +1140,7 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 | test/test_ball_locating.py                                             | Unit tests for the ball geometry and its tracker; run without a ROS graph. |
 | test/test_person_tracking.py                                           | Unit tests for the map-frame tracker; run without a ROS graph.       |
 | test/test_lidar_tracking.py                                            | Unit tests for the DR-SPAAM tracker; run without ROS, torch or `dr_spaam`. |
+| test/test_debug_overlay.py                                             | Unit tests for the debug drawing: a missing joint is never drawn; run without ROS. |
 | test/test_nvinfer_config.py                                            | Unit tests for where an nvinfer config's parser library and relative paths resolve; run without ROS or DeepStream. |
 | launch/perception.launch.py                                            | The pipeline: DR-SPAAM, one camera detector and the fusion. Does not start the camera. Included by every behaviour launch file. |
 | launch/mecanumbot_peopledetect.launch.py                               | Thin wrapper over `perception.launch.py` under its older name, for a run with no tree. |

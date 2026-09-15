@@ -22,6 +22,7 @@ import transforms3d as t3d
 from ament_index_python.packages import get_package_share_directory
 
 from mecanumbot_sensorprocess_smart import nvinfer_config
+from mecanumbot_sensorprocess_smart.debug_overlay import SKELETON_CONNECTIONS
 from mecanumbot_sensorprocess_smart.ros4hri_bridge import (
     BodyIdTracker,
     Ros4HriBodyBroadcaster,
@@ -63,26 +64,6 @@ KEYPOINT_FIELDS = (
     "left_ankle",
     "right_ankle",
 )
-
-# Standard YOLO pose skeleton connections
-SKELETON_CONNECTIONS = [
-    (0, 1),
-    (0, 2),
-    (1, 3),
-    (2, 4),  # Head/Face
-    (5, 6),  # Shoulders
-    (5, 7),
-    (7, 9),
-    (6, 8),
-    (8, 10),  # Arms
-    (11, 12),
-    (5, 11),
-    (6, 12),  # Torso/Hips
-    (11, 13),
-    (13, 15),
-    (12, 14),
-    (14, 16),  # Legs
-]
 
 # A skeleton has to land inside its own bounding box. These decide when the
 # node is entitled to say that it did not: how many joints have to be visible

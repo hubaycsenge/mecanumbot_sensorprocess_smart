@@ -30,6 +30,18 @@ import os
 
 import math
 
+from mecanumbot_sensorprocess_smart.debug_overlay import (
+    COLOUR_PERSON,
+    COLOUR_REJECTED,
+    draw_box,
+    draw_skeleton,
+    encode_jpeg,
+)
+
+# Joints below this confidence are left off the debug image. Drawing only: the
+# published keypoints are not thresholded by this node.
+DEBUG_KEYPOINT_CONF = 0.3
+
 
 class PersonDetectNode(Node):
     def __init__(self, namespace=""):
@@ -44,6 +56,7 @@ class PersonDetectNode(Node):
                 ("camera_topic", "camera/image_raw/compressed"),
                 ("webcam_device", "/dev/video0"),
                 ("img_process_params.weight_file", "yolo26n-pose.pt"),
+                ("debug_mode", False),
             ],
         )
 
@@ -57,6 +70,7 @@ class PersonDetectNode(Node):
         self.from_topic = self.get_parameter("from_topic").value
         self.camera_topic = self.get_parameter("camera_topic").value
         self.webcam_device = self.get_parameter("webcam_device").value
+        self.debug_mode = bool(self.get_parameter("debug_mode").value)
 
         self.bridge = CvBridge()
         self.weight_file = self.get_parameter(
@@ -122,6 +136,11 @@ class PersonDetectNode(Node):
         self.people_pub = self.create_publisher(
             CamPersonDetectionArray, "cam_people_detections", 10
         )
+        self.debug_image_pub = None
+        if self.debug_mode:
+            self.debug_image_pub = self.create_publisher(
+                CompressedImage, "cam_people_detections/debug_image/compressed", 10
+            )
         self.get_logger().info(
             "Person Detect Node has started. Device: {}".format(self.device)
         )
@@ -160,7 +179,7 @@ class PersonDetectNode(Node):
         )
         return angle
 
-    def process_image(self, cv_image):
+    def process_image(self, cv_image, stamp=None):
         results = self.yolo_model(
             cv_image, classes=[0], verbose=False
         )  # class 0 is 'person'
@@ -220,6 +239,63 @@ class PersonDetectNode(Node):
         self.detected_people.people = detected_people
         self.people_pub.publish(self.detected_people)
         self.get_logger().info(f"Published {len(detected_people)} detected people.")
+        if self.debug_mode:
+            self._publish_debug(cv_image, results, stamp)
+
+    def _publish_debug(self, cv_image, results, stamp):
+        """
+        Publish the frame with every person the model found drawn on it.
+
+        Only the first person of each result becomes a message (the loop above
+        reads keypoint set 0), so every other box is drawn red and labelled
+        `not published` -- the image shows what the network saw, not just what
+        reached the topic.
+        """
+        debug_img = cv_image.copy()
+        for result in results:
+            if result.boxes is None or len(result.boxes) == 0:
+                continue
+            corners = result.boxes.xyxy.cpu().numpy()
+            scores = result.boxes.conf.cpu().numpy()
+            joints_xy = joints_conf = None
+            if result.keypoints is not None:
+                joints_xy = result.keypoints.xy.cpu().numpy()
+                if result.keypoints.conf is not None:
+                    joints_conf = result.keypoints.conf.cpu().numpy()
+            for i, (box, score) in enumerate(zip(corners, scores)):
+                has_skeleton = joints_xy is not None and i < len(joints_xy)
+                published = i == 0 and has_skeleton and len(joints_xy[i]) == 17
+                label = f"person {score:.2f}"
+                if not published:
+                    label += " not published"
+                draw_box(
+                    debug_img,
+                    box,
+                    COLOUR_PERSON if published else COLOUR_REJECTED,
+                    label,
+                )
+                if has_skeleton:
+                    keypoints = [
+                        (
+                            float(x),
+                            float(y),
+                            None if joints_conf is None else float(joints_conf[i][j]),
+                        )
+                        for j, (x, y) in enumerate(joints_xy[i])
+                    ]
+                    draw_skeleton(debug_img, keypoints, DEBUG_KEYPOINT_CONF)
+
+        data = encode_jpeg(debug_img)
+        if data is None:
+            return
+        msg = CompressedImage()
+        msg.header.stamp = (
+            stamp if stamp is not None else self.get_clock().now().to_msg()
+        )
+        msg.header.frame_id = f"{self.namespace}/head_link"
+        msg.format = "jpeg"
+        msg.data = data
+        self.debug_image_pub.publish(msg)
 
     def image_callback(self, msg):
         self.get_logger().info(
@@ -233,7 +309,7 @@ class PersonDetectNode(Node):
             self.get_logger().error(f"Failed to decode image: {e}")
             return
         if self.robot_pose is not None:
-            self.process_image(cv_image)
+            self.process_image(cv_image, msg.header.stamp)
 
     def webcam_callback(self):
         if self.webcam_capture is None or not self.webcam_capture.isOpened():
