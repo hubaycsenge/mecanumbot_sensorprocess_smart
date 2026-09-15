@@ -97,6 +97,12 @@ class DeepStreamPersonDetectNode(Node):
                 ("model_params.models_dir", ""),
                 ("model_params.custom_lib_path", ""),
                 ("model_params.nvinfer_config", ""),
+                # ---- frame source ----
+                # False (the default): v4l2src opens webcam_device inside this
+                # pipeline, so no frame crosses ROS 2 on its way to the network.
+                # True: frames are decoded off camera_topic into an appsrc, which
+                # needs a camera node started separately. perception.launch.py
+                # sets this from camera_source (direct | topic).
                 ("from_topic", False),
                 ("camera_topic", "camera/image_raw/compressed"),
                 ("webcam_device", "/dev/video0"),
@@ -172,8 +178,13 @@ class DeepStreamPersonDetectNode(Node):
         self.pipeline = Gst.Pipeline()
 
         # Build Pipeline Elements
-        self.get_logger().info("source: " + str(self.from_topic))
         if self.from_topic:
+            self.get_logger().info(
+                "Frame source: TOPIC -- decoding "
+                f"'{self.get_parameter('camera_topic').value}' into an appsrc. "
+                "This node does not start the camera; nothing is detected until "
+                "a camera node publishes there."
+            )
             self.source = Gst.ElementFactory.make("appsrc", "ros-image-source")
             self.source.set_property("is-live", True)
             caps = Gst.Caps.from_string(
@@ -193,6 +204,13 @@ class DeepStreamPersonDetectNode(Node):
                 sensor_qos,
             )
         else:
+            # The default: the webcam goes straight into DeepStream, with no
+            # ROS 2 middleware in the frame path.
+            self.get_logger().info(
+                f"Frame source: DIRECT -- v4l2src on {self.webcam_device}, no ROS "
+                "image topic in between. Nothing else can open the camera while "
+                "this runs."
+            )
             self.source = Gst.ElementFactory.make("v4l2src", "webcam-source")
             self.source.set_property("device", self.webcam_device)
 
@@ -344,6 +362,32 @@ class DeepStreamPersonDetectNode(Node):
         self.pipeline.set_state(Gst.State.PLAYING)
         self.get_logger().info("DeepStream Pipeline Running!")
         self._announce_input_geometry()
+
+        # Nothing runs a GLib main loop here, so the pipeline's bus is never
+        # watched: a webcam that is busy or missing, or an nvinfer that failed
+        # to load, would leave this node running and publishing nothing.
+        self.bus = self.pipeline.get_bus()
+        self.bus_timer = self.create_timer(0.5, self._log_pipeline_messages)
+
+    def _log_pipeline_messages(self):
+        """Log the pipeline's errors and warnings, discarding its other messages."""
+        while True:
+            message = self.bus.pop_filtered(
+                Gst.MessageType.ERROR | Gst.MessageType.WARNING
+            )
+            if message is None:
+                return
+            source = message.src.get_name() if message.src else "pipeline"
+            if message.type == Gst.MessageType.ERROR:
+                error, debug = message.parse_error()
+                self.get_logger().error(
+                    f"GStreamer {source}: {error.message} ({debug})"
+                )
+            else:
+                warning, debug = message.parse_warning()
+                self.get_logger().warn(
+                    f"GStreamer {source}: {warning.message} ({debug})"
+                )
 
     def _build_gate_config(self):
         """Assemble the detection gate thresholds from the ROS parameters."""

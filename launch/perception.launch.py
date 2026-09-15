@@ -35,28 +35,35 @@ dependency cycle. Depending on the perception package instead does not.
 * `mecanumbot_locate_detections` -- the fusion, publishing `people_fusion` and,
   with the fetch detector, `ball_fusion` / `ball_detections`.
 
-## `use_camera`: who owns the camera
+## `camera_source`: how frames reach the network
 
-The camera can only be opened once, so this is a choice and not a flag.
+**`direct` is the default, and the intended way to run on the robot.** The
+camera can only be opened once, so this is a choice between two paths:
 
-* **false** (the default) -- the DeepStream detector opens the camera itself
-  (`v4l2src` on `/dev/video0`, the USB webcam). Cheapest path: no JPEG encode,
-  no decode, no topic. But nothing else can have the camera, so **there is no
-  `/camera/image_raw/compressed`** for a recording, the web GUI or an operator
-  to look at.
-* **true** -- the detector subscribes to `camera_topic`. That costs a JPEG
-  encode on the publisher and a decode in the detector, and it is what the
-  leading experiment runs with, because a trial that is not recorded from the
-  robot's own point of view is a trial that cannot be scored afterwards.
+* **direct** -- the DeepStream detector opens the USB webcam itself, inside its
+  own GStreamer pipeline (`v4l2src` on `/dev/video0` -> nvvideoconvert ->
+  nvinfer). **No ROS 2 middleware carries a frame**: no camera node, no JPEG
+  encode, no DDS transport, no decode. It is the cheapest path there is, and
+  why it is the default. The cost is that nothing else can open the camera, so
+  there is no `/camera/image_raw/compressed`; the only picture on the ROS graph
+  is the detector's own `debug_image` (below).
+* **topic** -- the detector subscribes to `camera_topic` and pushes each decoded
+  frame into an `appsrc`. That costs a whole camera node, a JPEG encode, the
+  transport and a decode, and exists only for when something else needs the raw
+  stream too (a clean recording, the Deep3R client in T2).
+  **It does not start the camera**: nothing in this file or any behaviour launch
+  publishes `camera_topic` (the include was removed in 2f7aade), so start it
+  first or the detector never gets a frame and stays silent:
 
-**`use_camera:=true` does not start the camera.** The include of
-`mecanumbot_camera_stream`'s `camera_compressed.launch.py` is commented out
-(2f7aade, 2026-09-10), so this file starts no publisher: with nothing started by
-hand the detector never gets a frame. Start it first:
+      ros2 launch mecanumbot_camera_stream camera_compressed.launch.py width:=1280 height:=720
 
-    ros2 launch mecanumbot_camera_stream camera_compressed.launch.py width:=1280 height:=720
+  `camera_fps` and `jpeg_quality` are still declared but went only to that
+  include.
 
-`camera_fps` and `jpeg_quality` are still declared but went only to that include.
+Any other value stops the launch, and so does the old `use_camera` argument
+this replaced (2026-09-15): `use_camera:=false` read as "no camera" when it
+meant "open the camera directly", and a stray `use_camera:=true` would
+otherwise be silently ignored.
 
 ## One frame size, three nodes
 
@@ -77,7 +84,7 @@ refused ones in red with the check they failed:
 * `pose`  -> `/<namespace>/cam_people_detections/debug_image/compressed`
 * `fetch` -> `/<namespace>/cam_object_detections/debug_image/compressed`
 
-It is the only way to see the camera when `use_camera` is false, and it is
+It is the only way to see the camera with `camera_source:=direct`, and it is
 **on by default**, so that what the robot saw during a behaviour can be
 surveyed afterwards from a recording. It costs a copy of the frame out of GPU
 memory and a JPEG encode per frame; `debug_image:=false` saves both.
@@ -87,7 +94,12 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    LogInfo,
+    OpaqueFunction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
@@ -111,12 +123,46 @@ CAMERA_LAUNCH = os.path.join(
 )
 '''
 
+# `direct`: the detector's GStreamer pipeline opens the webcam (v4l2src), no ROS
+# in the frame path -- the default. `topic`: frames come over ROS from a camera
+# node somebody else started.
+CAMERA_SOURCES = ("direct", "topic")
+
+
+def _check_camera_source(context):
+    """Refuse an unknown `camera_source`, or the `use_camera` it replaced, and say which path runs."""
+    if "use_camera" in context.launch_configurations:
+        raise RuntimeError(
+            "use_camera was replaced by camera_source: use_camera:=false is now "
+            "camera_source:=direct (the default), use_camera:=true is "
+            "camera_source:=topic."
+        )
+    source = context.launch_configurations.get("camera_source", "")
+    if source not in CAMERA_SOURCES:
+        raise RuntimeError(
+            f"camera_source:={source!r} is not one of {', '.join(CAMERA_SOURCES)}."
+        )
+    if source == "direct":
+        message = (
+            "[perception] camera_source=direct: the detector opens the webcam "
+            "itself (v4l2src), no ROS image topic in the frame path"
+        )
+    else:
+        message = (
+            "[perception] camera_source=topic: the detector reads "
+            f"{context.launch_configurations.get('camera_topic')} -- this launch "
+            "does NOT start the camera; run camera_compressed.launch.py or the "
+            "detector gets no frames"
+        )
+    return [LogInfo(msg=message)]
+
+
 def generate_launch_description():
     """Build the launch description for the perception pipeline."""
     namespace = LaunchConfiguration("namespace")
     use_sim_time = LaunchConfiguration("use_sim_time")
     detector = LaunchConfiguration("detector")
-    use_camera = LaunchConfiguration("use_camera")
+    camera_source = LaunchConfiguration("camera_source")
     camera_topic = LaunchConfiguration("camera_topic")
     camera_width = LaunchConfiguration("camera_width")
     camera_height = LaunchConfiguration("camera_height")
@@ -124,9 +170,11 @@ def generate_launch_description():
     run_pose = IfCondition(PythonExpression(["'", detector, "' == 'pose'"]))
     run_fetch = IfCondition(PythonExpression(["'", detector, "' == 'fetch'"]))
 
-    # The detectors read the frame off a topic only when something else owns the
-    # camera, which is exactly when `use_camera` is true.
-    from_topic = ParameterValue(use_camera, value_type=bool)
+    # The node's `from_topic` is true only for `camera_source:=topic`; with the
+    # default `direct` it builds its pipeline on v4l2src instead of an appsrc.
+    from_topic = ParameterValue(
+        PythonExpression(["'", camera_source, "' == 'topic'"]), value_type=bool
+    )
     debug_mode = ParameterValue(LaunchConfiguration("debug_image"), value_type=bool)
     width = ParameterValue(camera_width, value_type=int)
     height = ParameterValue(camera_height, value_type=int)
@@ -161,21 +209,22 @@ def generate_launch_description():
                 description="Run DR-SPAAM on the scan",
             ),
             DeclareLaunchArgument(
-                "use_camera",
-                default_value="false",
+                "camera_source",
+                default_value="direct",
+                choices=list(CAMERA_SOURCES),
                 description=(
-                    "Feed the detector from /camera/image_raw/compressed instead "
-                    "of letting it open the camera directly. Does NOT start the "
-                    "publisher: run camera_compressed.launch.py first. The "
-                    "camera can only be opened once, so this is "
-                    "the choice between having the stream and not paying for it"
+                    "direct (default): the detector opens the webcam itself "
+                    "with v4l2src, no ROS 2 middleware in the frame path, "
+                    "cheapest. topic: read camera_topic instead -- does NOT "
+                    "start the camera, run camera_compressed.launch.py first"
                 ),
             ),
             DeclareLaunchArgument(
                 "camera_topic",
                 default_value="/camera/image_raw/compressed",
                 description=(
-                    "Where the compressed frames are published and read. "
+                    "Only with camera_source:=topic: where the compressed "
+                    "frames are published and read. "
                     "Absolute on purpose: the publisher is not namespaced and "
                     "the detectors are, so a relative name would be looked for "
                     "under /<namespace>/ and never found"
@@ -235,15 +284,16 @@ def generate_launch_description():
                 msg=[
                     "[perception] detector=",
                     detector,
-                    "  use_camera=",
-                    use_camera,
+                    "  camera_source=",
+                    camera_source,
                     "  frame=",
                     camera_width,
                     "x",
                     camera_height,
                 ]
             ),
-            
+            OpaqueFunction(function=_check_camera_source),
+
             Node(
                 namespace=namespace,
                 package="mecanumbot_sensorprocess_smart",

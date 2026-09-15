@@ -70,12 +70,12 @@ to them. On an Orin Nano that is not free: the network is most of the GPU, and i
 holds the camera open so nothing else can have it. Each behaviour now starts the
 detector it needs:
 
-| Launch | detector | `use_camera` |
+| Launch | detector | `camera_source` |
 | --- | --- | --- |
-| `mecanumbot_leading_behaviour` | `pose` | **true** — a leading trial is scored afterwards from what the robot could see. **Start the camera by hand** (below). |
-| `mecanumbot_ostensive_behaviour` | `pose` | false |
-| `mecanumbot_seek` | `pose` (for the alert's audience) | false |
-| `mecanumbot_fetch_behaviour` | `fetch` | false |
+| `mecanumbot_leading_behaviour` | `pose` | `direct` — record `cam_people_detections/debug_image/compressed` to score a trial |
+| `mecanumbot_ostensive_behaviour` | `pose` | `direct` |
+| `mecanumbot_seek` | `pose` (for the alert's audience) | `direct` (`topic` when the Deep3R client needs the stream in T2) |
+| `mecanumbot_fetch_behaviour` | `fetch` | `direct` |
 
 `mecanumbot_bringup`'s `launch_external.launch.py` used to start `mecanumbot_lidar_detect_people` unconditionally on the operator PC, under the same node name and namespace as the one here — so it either duplicated the robot's detector on `dr_spaam/dets` and `subject_pose` or ran with nothing subscribed. It is now behind `use_people_detection`, default false. Set it true only to run DR-SPAAM off the robot, and then keep the robot's off (`use_lidar_people:=false`, or the tree's `use_perception:=false`).
 
@@ -87,39 +87,56 @@ detector it needs:
 | `use_sim_time` | `false` | Use the sim clock. |
 | `detector` | `pose` | `pose` (DeepStream skeletons) \| `fetch` (DeepStream people **and balls**) \| `none` (LiDAR only). |
 | `use_lidar_people` | `true` | Run DR-SPAAM on the scan. |
-| `use_camera` | `false` | See below — this is a choice, not a flag. |
-| `camera_topic` | `/camera/image_raw/compressed` | Where the frames are published and read. Absolute on purpose. |
+| `camera_source` | `direct` | `direct`: the detector opens the webcam itself, no ROS 2 middleware in the frame path. `topic`: it reads `camera_topic`, which nothing here starts. See below. |
+| `camera_topic` | `/camera/image_raw/compressed` | Only with `camera_source:=topic`: where the frames are published and read. Absolute on purpose. |
 | `debug_image` | `true` | Sets `debug_mode` on whichever camera detector runs, so it publishes its annotated frame. On by default so a behaviour's view can be surveyed; `false` saves a frame copy and a JPEG encode per frame. |
 | `camera_width` / `camera_height` | `1280` / `720` | The frame size, for the detector **and** the fusion. The camera publisher is not started here, so give it the same size by hand. |
 | `camera_fps`, `jpeg_quality` | `15.0`, `80` | Declared but **unused**: they went to the camera include, which is commented out. |
 | `yolo_imgsz` / `yolo_model` | `1280` / `yolo26m-pose` | The pose model. |
 | `fetch_imgsz` / `fetch_model` | `640` / `yolo26m` | The fetch model. |
 
-### `use_camera`: who owns the camera
+### `camera_source`: how frames reach the network
 
-The camera can only be opened once, so this is a choice between two things you might
-want and cannot both have for free:
+**The default is `direct`, in `perception.launch.py` and in every behaviour launch
+file, and it is the way the onboard detectors are meant to run.** The camera can only
+be opened once, so there are two paths and a run takes one of them:
 
-* **false** — the DeepStream detector opens the camera itself: `v4l2src` on
-  `webcam_device` (`/dev/video0`, the robot's USB webcam). Cheapest path: no JPEG
-  encode, no decode, no topic. But nothing else can have the camera, so **there is no
-  `/camera/image_raw/compressed`** for a recording, the web GUI, or an operator to
-  look at.
-* **true** — the detector subscribes to `camera_topic` instead of opening the camera.
-  That costs a JPEG encode on the publisher and a decode in the detector. It is what
-  the leading experiment runs with.
+```text
+direct (default)   /dev/video0 ─ v4l2src ─ nvvideoconvert ─ nvstreammux ─ nvinfer ─ probe ─► cam_people_detections
+                   └──────────────── one GStreamer pipeline, inside the detector node ────────────────┘
 
-**`use_camera:=true` does not start the camera.** It used to include
-`mecanumbot_camera_stream`'s `camera_compressed.launch.py`; since 2026-09-10
-(`2f7aade`, "remove stray camera launch") that include is commented out, so the flag
-only sets the detector's `from_topic`. Nothing in any behaviour launch publishes
-`/camera/image_raw/compressed` any more — without a publisher started by hand, a
-`use_camera:=true` run has a detector that never gets a frame and no image topic to
-record. Start it before the behaviour:
+topic              camera node ─ JPEG ─► /camera/image_raw/compressed ─ DDS ─► detector: imdecode ─ appsrc ─ nvvideoconvert ─ …
+```
+
+* **`direct`** — the DeepStream detector opens the USB webcam (`webcam_device`,
+  `/dev/video0`) itself. **No ROS 2 middleware carries a frame**: no camera node, no
+  JPEG encode, no DDS transport, no decode. The only ROS traffic is the detector's
+  output. Nothing needs starting by hand. The cost: nothing else can open the camera,
+  so there is **no `/camera/image_raw/compressed`**. The only picture on the ROS graph
+  is the detector's annotated `debug_image` (on by default), and that is what to record
+  to see afterwards what the robot saw.
+* **`topic`** — the detector subscribes to `camera_topic` and pushes each decoded
+  frame into an `appsrc`. Use it only when something else needs the raw stream too: an
+  unannotated recording, or the Deep3R client during T2.
+
+**`camera_source:=topic` does not start the camera.** Up to 2026-09-10 perception
+included `mecanumbot_camera_stream`'s `camera_compressed.launch.py`; `2f7aade`
+("remove stray camera launch") commented that out, and no behaviour launch publishes
+`/camera/image_raw/compressed`. Without a publisher started by hand the detector never
+gets a frame and publishes nothing, `debug_image` included, with no error. Start the
+camera before the behaviour, at the same frame size:
 
 ```bash
 ros2 launch mecanumbot_camera_stream camera_compressed.launch.py width:=1280 height:=720
 ```
+
+The argument was called `use_camera` (`false` = direct, `true` = topic) until
+2026-09-15. It was renamed because `use_camera:=false` read as "no camera". An unknown
+value, or the old `use_camera` passed to any launch that includes perception, now
+stops the launch with a message instead of being silently ignored. Each detector logs
+`Frame source: DIRECT …` or `Frame source: TOPIC …` at startup. It also prints
+GStreamer errors and warnings from its pipeline (a busy or missing `/dev/video0`, an
+nvinfer that failed to load), which used to go unreported.
 
 Its backend defaults to `usb`: the camera is a USB webcam, and `csi`
 (`nvarguscamerasrc`) cannot open it. Apart from the camera's own launch files (and
@@ -344,7 +361,7 @@ ROS node name: `mecanumbot_cam_detect_people_ds`.
 
 | Topic                                          | Data type                                              | Processing                                                    |
 | ---------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------- |
-| `camera/image_raw/compressed` or webcam device | `sensor_msgs/msg/CompressedImage` or V4L2 camera input | Feeds frames into the DeepStream pipeline for pose inference. |
+| `camera/image_raw/compressed` or webcam device | `sensor_msgs/msg/CompressedImage` or V4L2 camera input | Feeds frames into the DeepStream pipeline for pose inference. By default (`from_topic` false) there is no subscription: `v4l2src` reads `webcam_device` inside the pipeline. |
 
 ### Parameters
 
@@ -353,9 +370,9 @@ ROS node name: `mecanumbot_cam_detect_people_ds`.
 | `camera_params.camera_width`  | `1280`                        | Pipeline and streammux width.                                                         |
 | `camera_params.camera_height` | `720`                         | Pipeline and streammux height.                                                        |
 | `camera_params.camera_fov`    | `60°` (in radians)            | Horizontal field of view used for the angular bounds.                                 |
-| `from_topic`                  | `false`                       | `true` pushes ROS frames into an `appsrc`, `false` uses `v4l2src` on `webcam_device`. |
-| `camera_topic`                | `camera/image_raw/compressed` | Compressed image input topic.                                                         |
-| `webcam_device`               | `/dev/video0`                 | V4L2 device used in webcam mode.                                                      |
+| `from_topic`                  | `false`                       | `false` (default): `v4l2src` on `webcam_device`, no ROS in the frame path. `true`: ROS frames decoded into an `appsrc`. Set by `perception.launch.py` from `camera_source`. |
+| `camera_topic`                | `camera/image_raw/compressed` | Compressed image input topic, only when `from_topic` is true.                         |
+| `webcam_device`               | `/dev/video0`                 | V4L2 device opened when `from_topic` is false.                                        |
 | `debug_mode`                  | `false`                       | Enables the annotated debug image publisher.                                          |
 | `keypoint_scaling`            | `auto`                        | How to invert the `nvinfer` input resize: `letterbox`, `stretch`, or `auto`.           |
 | `model_params.imgsz`          | `640`                         | Input size the pose model expects; selects `models/imgsz_<n>/`. `perception.launch.py` sets it from `yolo_imgsz` (default `1280`). |
@@ -750,7 +767,7 @@ is.
 
 | Topic | Data type | Processing |
 | --- | --- | --- |
-| `camera/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | Decoded and pushed into the pipeline's appsrc. Only when `from_topic` is true; otherwise the source is `webcam_device`. |
+| `camera/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | Decoded and pushed into the pipeline's appsrc. Only when `from_topic` is true; by default there is no subscription and `v4l2src` reads `webcam_device` inside the pipeline. |
 
 ### Parameters
 
@@ -764,9 +781,9 @@ is.
 | `model_params.models_dir` | `''` | Empty means the package share `models/`. |
 | `model_params.custom_lib_path` | `''` | Where **DeepStream-Yolo** was built, `~`/`$USER` expanded. Empty searches the config's path, then `~/deepstream_source` and `~/Documents/installed_external`. |
 | `model_params.nvinfer_config` | `''` | A complete config to hand nvinfer untouched; disables all substitution. |
-| `from_topic` | `false` | `true` pushes ROS frames into an `appsrc`, `false` uses `v4l2src` on `webcam_device`. |
-| `camera_topic` | `camera/image_raw/compressed` | Compressed image input topic. |
-| `webcam_device` | `/dev/video0` | V4L2 device used in webcam mode. |
+| `from_topic` | `false` | `false` (default): `v4l2src` on `webcam_device`, no ROS in the frame path. `true`: ROS frames decoded into an `appsrc`. Set by `perception.launch.py` from `camera_source`. |
+| `camera_topic` | `camera/image_raw/compressed` | Compressed image input topic, only when `from_topic` is true. |
+| `webcam_device` | `/dev/video0` | V4L2 device opened when `from_topic` is false. |
 | `classes.person_id` / `classes.ball_id` | `0` / `32` | COCO numbering for the shipped model. |
 | `classes.person_label` / `classes.ball_label` | `person` / `sports ball` | What travels downstream — a numeric id means nothing once the detection has left the camera. |
 | `classes.person_topic` / `classes.ball_topic` | `cam_people_boxes` / `cam_ball_boxes` | Where each class is published. |
@@ -1178,10 +1195,13 @@ ros2 launch mecanumbot_sensorprocess_smart perception.launch.py
 # ... with the fetch detector instead of the pose one, so balls are found too
 ros2 launch mecanumbot_sensorprocess_smart perception.launch.py detector:=fetch
 
+# Both of the above open the webcam directly (camera_source:=direct, the default):
+# no camera node and no image topic in the frame path.
+
 # ... with the detector reading the camera topic instead of the device. This does
-# NOT start the camera (see `use_camera` above) -- start the publisher first
+# NOT start the camera (see `camera_source` above) -- start the publisher first
 ros2 launch mecanumbot_camera_stream camera_compressed.launch.py width:=1280 height:=720
-ros2 launch mecanumbot_sensorprocess_smart perception.launch.py use_camera:=true
+ros2 launch mecanumbot_sensorprocess_smart perception.launch.py camera_source:=topic
 
 # the older name still works; it is a wrapper over the same file
 ros2 launch mecanumbot_sensorprocess_smart mecanumbot_peopledetect.launch.py
