@@ -89,7 +89,7 @@ class DeepStreamPersonDetectNode(Node):
             parameters=[
                 ("camera_params.camera_width", 1280),
                 ("camera_params.camera_height", 720),
-                ("camera_params.camera_fov", math.radians(60.0)),
+                ("camera_params.camera_fov", math.radians(51.0)),
                 # ---- pose model (see _render_nvinfer_config) ----
                 ("model_params.imgsz", 640),
                 ("model_params.model_name", "yolo26m-pose"),

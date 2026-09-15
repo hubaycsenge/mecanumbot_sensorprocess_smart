@@ -123,7 +123,7 @@ class PersonLocateNode(Node):
         # the cheapest symptom of their having drifted apart.
         self.declare_parameter("camera_params.camera_width", 1280)
         self.declare_parameter("camera_params.camera_height", 720)
-        self.declare_parameter("camera_params.camera_fov", math.radians(60.0))
+        self.declare_parameter("camera_params.camera_fov", math.radians(51.0))
         # 0.0 derives the vertical field of view from the frame shape, assuming
         # square pixels.
         self.declare_parameter("camera_params.camera_vfov", 0.0)
@@ -178,7 +178,7 @@ class PersonLocateNode(Node):
         self.declare_parameter("ball.neck.level_ticks", 600.0)
         self.declare_parameter("ball.neck.rad_per_tick", 0.005061)
         # UNMEASURED: the lens tilt at level_ticks, positive up.
-        self.declare_parameter("ball.neck.pitch_at_level_deg", 0.0)
+        self.declare_parameter("ball.neck.pitch_at_level_deg", 4.7)
         self.declare_parameter("ball.tracking.max_association_distance", 0.6)
         self.declare_parameter("ball.tracking.min_hits", 2)
         self.declare_parameter("ball.tracking.max_coast_time", 1.0)

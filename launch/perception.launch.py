@@ -75,6 +75,11 @@ numbers. The default is 1280x720, which is what the DeepStream detectors were
 already configured for; the camera publisher's own config file says 640x480 and
 is overridden here.
 
+`camera_hfov_deg` goes to the detector and the fusion node the same way, for the
+same reason. It defaults to **51**, measured on the robot's USB webcam on
+2026-09-15. Every node assumed 60 before, which put a person at the frame edge
+~4.5 deg further round than they were and ranged every ball ~20 % short.
+
 ## `debug_image`: what the detector saw
 
 Sets `debug_mode` on whichever camera detector runs, which publishes the frame
@@ -179,9 +184,19 @@ def generate_launch_description():
     width = ParameterValue(camera_width, value_type=int)
     height = ParameterValue(camera_height, value_type=int)
 
+    # The lens's horizontal field of view, in radians, for the same three nodes:
+    # every bearing and every apparent-size range is computed from it.
+    hfov = ParameterValue(
+        PythonExpression(
+            ["__import__('math').radians(float('", LaunchConfiguration("camera_hfov_deg"), "'))"]
+        ),
+        value_type=float,
+    )
+
     camera_params = {
         "camera_params.camera_width": width,
         "camera_params.camera_height": height,
+        "camera_params.camera_fov": hfov,
     }
 
     return LaunchDescription(
@@ -247,6 +262,15 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "camera_height", default_value="720", description="Frame height"
+            ),
+            DeclareLaunchArgument(
+                "camera_hfov_deg",
+                default_value="51.0",
+                description=(
+                    "Horizontal field of view of the lens [deg], for the detector "
+                    "and the fusion. 51 was measured on the robot's USB webcam "
+                    "on 2026-09-15; every node assumed 60 before"
+                ),
             ),
             DeclareLaunchArgument(
                 "camera_fps", default_value="15.0", description="Frames per second"

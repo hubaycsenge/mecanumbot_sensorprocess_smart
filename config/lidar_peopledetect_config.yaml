@@ -129,7 +129,7 @@ mecanumbot_cam_detect_people_ds:
       min_box_height: 40.0
       max_box_aspect_ratio: 1.6
       # ---- close range ----
-      # The camera sits on the head at about 0.22 m with a ~36 deg vertical
+      # The camera sits on the head at about 0.22 m with a ~30 deg vertical
       # FOV, so from roughly 3 m in a person's torso is above the top of the
       # frame and only their legs are left: at 0.6 m the camera sees the world
       # from the floor to about 0.4 m. Requiring a torso of them cannot be
@@ -230,7 +230,7 @@ mecanumbot_locate_detections:
 
       # ---- the camera's blind zone ----
       # Requiring the camera to agree only makes sense where the camera could
-      # have agreed. It sits on the head at ~0.22 m with a ~36 deg vertical
+      # have agreed. It sits on the head at ~0.22 m with a ~30 deg vertical
       # FOV, so a person closer than about a metre has nothing in frame that
       # the pose network can call a body, and a person off to the side is not
       # in the picture at all -- which is most of a leading trial, since the
@@ -249,9 +249,10 @@ mecanumbot_locate_detections:
       # Metres from the camera within which there is not enough of a person in
       # frame to detect, whatever the gate thresholds are.
       camera_blind_range: 0.9
-      # Half the camera's horizontal FOV. 30 deg is the ~60 deg horizontal of
-      # the 16:9 frame whose vertical is the ~36 deg quoted above.
-      camera_half_fov_deg: 30.0
+      # Half the camera's horizontal FOV: half of the 51 deg measured on
+      # 2026-09-15 (camera_params below), whose 16:9 vertical is the ~30 deg
+      # quoted above. It was 30 here while the lens was assumed to be 60 deg.
+      camera_half_fov_deg: 25.5
       # Seconds a track may be reported on the exemption before the camera has
       # to agree again regardless. Past it the track is silenced rather than
       # dropped -- it keeps absorbing the LiDAR returns, so no replacement is
@@ -281,7 +282,14 @@ mecanumbot_locate_detections:
     camera_params:
       camera_width: 1280
       camera_height: 720
-      camera_fov: 1.0471975512   # 60 deg
+      # MEASURED 2026-09-15: 51 deg, not the 60 deg every node assumed. The
+      # robot turned +-0.2 rad in place (odometry yaw) with a ball in front of
+      # it, and the ball's pixel shift gave a focal length of ~1340 px; the
+      # same focal length is what makes the neck calibration below come out at
+      # the AX-12A datasheet's 0.29 deg per tick, and what ranges a ball placed
+      # ~1 m away at ~1 m. perception.launch.py passes camera_hfov_deg to all
+      # three camera nodes, which overrides this; keep the two the same.
+      camera_fov: 0.8901179185   # 51 deg
       # 0.0 derives the vertical field of view from the frame shape, assuming
       # square pixels, which every camera on this robot has.
       camera_vfov: 0.0
@@ -327,7 +335,7 @@ mecanumbot_locate_detections:
       camera_z: 0.21
       # Positive looks UP. With neck.enabled, camera_x, camera_z and this are
       # only the fallback for a frame with no neck reading: every other frame
-      # is placed with the tilt the neck had, because the fetch tree sweeps it.
+      # is placed with the tilt the neck had, because the fetch tree moves it.
       camera_pitch_deg: 0.0
       floor_z: -0.01
       # Nearer than the first the ball is under the camera's chin; further than
@@ -360,13 +368,22 @@ mecanumbot_locate_detections:
         pivot_z: 0.1679
         lever_x: 0.022
         lever_z: 0.038
-        # The trees' neck_level_pos (6.0) in ticks, and the tilt per tick.
+        # The trees' neck_level_pos (6.0) in ticks, and the tilt per tick: the
+        # AX-12A's 300 deg over 1023 units, which the measurement below
+        # reproduced (a free fit gave 0.005115).
         level_ticks: 600.0
         rad_per_tick: 0.005061
-        # UNMEASURED. The lens tilt at level_ticks, positive up. To measure it,
-        # put a ball on the floor with the head at neck_level_pos:
-        # floor_pitch() in ball_locating.py turns one box of it into this.
-        pitch_at_level_deg: 0.0
+        # MEASURED 2026-09-15: the lens tilt at level_ticks, positive up. A ball
+        # on the floor ~1 m ahead, the neck held still at 500..600 ticks in 0.1
+        # steps up and then down, floor_pitch() in ball_locating.py on every
+        # box with the 51 deg lens: +4.4 deg coming down, +5.0 going up (a
+        # couple of ticks of backlash), each within +-0.4 deg across positions.
+        # So the camera is optically level at ~584 ticks, not at 600. With the
+        # 0 this used to be, a ball on the floor was placed tens of cm below
+        # it and the fetch tree called it unreachable. The same number is
+        # mecanumbot_deep3r's camera.pitch_at_level_deg and the offset in
+        # mecanumbot_sensorproc_node's head_joint: change all three or none.
+        pitch_at_level_deg: 4.7
 
       # Alpha-beta smoothing in the map frame. Lighter than the person tracker
       # on purpose: a ball is one cleanly-shaped unambiguous target with none of

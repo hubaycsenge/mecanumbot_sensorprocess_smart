@@ -369,7 +369,7 @@ ROS node name: `mecanumbot_cam_detect_people_ds`.
 | ----------------------------- | ----------------------------- | ------------------------------------------------------------------------------------- |
 | `camera_params.camera_width`  | `1280`                        | Pipeline and streammux width.                                                         |
 | `camera_params.camera_height` | `720`                         | Pipeline and streammux height.                                                        |
-| `camera_params.camera_fov`    | `60°` (in radians)            | Horizontal field of view used for the angular bounds.                                 |
+| `camera_params.camera_fov`    | `51°` (in radians)            | Horizontal field of view used for the angular bounds. Measured 2026-09-15; `perception.launch.py` sets it from `camera_hfov_deg`. |
 | `from_topic`                  | `false`                       | `false` (default): `v4l2src` on `webcam_device`, no ROS in the frame path. `true`: ROS frames decoded into an `appsrc`. Set by `perception.launch.py` from `camera_source`. |
 | `camera_topic`                | `camera/image_raw/compressed` | Compressed image input topic, only when `from_topic` is true.                         |
 | `webcam_device`               | `/dev/video0`                 | V4L2 device opened when `from_topic` is false.                                        |
@@ -458,7 +458,7 @@ one, so props never accumulate hits and a person who genuinely leaves expires on
 
 The camera is on the head, about **0.22 m** off the floor (`head_joint` at z = 0.168 in
 `mecanumbot.urdf`, plus the camera offset), with a vertical field of view of roughly
-**36°** at 1280×720. That geometry decides what a person looks like as they approach:
+**30°** at 1280×720 (51° horizontally, measured on 2026-09-15). That geometry decides what a person looks like as they approach:
 
 | Distance | What is in frame                     | Torso keypoints available |
 | -------- | ------------------------------------ | ------------------------- |
@@ -774,7 +774,7 @@ is.
 | Parameter | Default | Function |
 | --- | --- | --- |
 | `camera_params.camera_width` / `_height` | `1280` / `720` | Frame the boxes are expressed in. Must match `mecanumbot_locate_detections`. |
-| `camera_params.camera_fov` | `60°` | Horizontal field of view, logged for cross-checking against the fusion node's copy. |
+| `camera_params.camera_fov` | `51°` | Horizontal field of view, logged for cross-checking against the fusion node's copy. Set by `perception.launch.py`'s `camera_hfov_deg`. |
 | `model_params.imgsz` | `640` | Selects `models/imgsz_<n>/`. |
 | `model_params.model_name` | `yolo26m` | Stem of the ONNX in that folder. |
 | `model_params.precision` | `fp16` | Must match `network-mode` in the nvinfer config. |
@@ -905,7 +905,7 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 | `tracking.blind_zone_min_hits`      | `5`     | Consecutive LiDAR-only measurements inside the blind zone that confirm a track.  |
 | `tracking.blind_zone_creates_tracks`| `true`  | Whether a LiDAR-only measurement in the blind zone may start a track, not just sustain one. |
 | `camera_params.camera_width` / `_height` | `1280` / `720` | The frame the incoming boxes are in. Must match the detector's. |
-| `camera_params.camera_fov`          | `60°`   | Horizontal field of view. The bearing and the apparent-size range both come from it. |
+| `camera_params.camera_fov`          | `51°`   | Horizontal field of view. The bearing and the apparent-size range both come from it. **Measured** 2026-09-15 (it was an assumed 60°, which ranged every ball ~20 % short); `perception.launch.py` sets it from `camera_hfov_deg`. |
 | `camera_params.camera_vfov`         | `0.0`   | `0.0` derives it from the frame shape, assuming square pixels. |
 | `ball.enabled`                      | `true`  | The ball path as a whole. |
 | `ball.boxes_topic`                  | `cam_ball_boxes` | Where the ball boxes come from. |
@@ -923,7 +923,7 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 | `ball.neck.topic` / `ball.neck.stale_s` | `opencr_state` / `0.5` | Where the neck position comes from, and how far behind a frame it may be [s]. |
 | `ball.neck.pivot_x` / `_z`, `ball.neck.lever_x` / `_z` | `0.1063` / `0.1679`, `0.022` / `0.038` | The neck pivot and the pivot-to-lens lever in the base frame [m]. |
 | `ball.neck.level_ticks` / `ball.neck.rad_per_tick` | `600.0` / `0.005061` | Servo ticks of the trees' `neck_level_pos`, and tilt per tick. |
-| `ball.neck.pitch_at_level_deg`      | `0.0`   | **Unmeasured.** Lens tilt at `level_ticks`, positive up. |
+| `ball.neck.pitch_at_level_deg`      | `4.7`   | **Measured** 2026-09-15. Lens tilt at `level_ticks`, positive up: the camera is level at ~584 ticks. |
 | `ball.tracking.*`                   | — | Alpha-beta smoothing in the map frame; see `ball_locating.py`. |
 | `person_boxes.enabled`              | `true`  | Accept person evidence from the fetch detector as well as the pose one. |
 | `person_boxes.topic`                | `cam_people_boxes` | Where those boxes come from. |
@@ -975,7 +975,7 @@ not belief: it must not turn a person who left into a permanent phantom.
 
 **The blind zone.** That rule has one exception, and it is the close-range case the
 leading experiment runs into. Demanding corroboration only makes sense where the camera
-could have supplied it. The camera sits on the head at ~0.22 m with a ~36° vertical field
+could have supplied it. The camera sits on the head at ~0.22 m with a ~30° vertical field
 of view, so a person nearer than about a metre has nothing in frame the pose network can
 call a body — the `proximity_*` gate above buys back the last stretch of that, but not
 all of it — and a person outside the horizontal field of view is not in the picture at
@@ -1028,7 +1028,7 @@ camera has. The geometry is `ball_locating.py`; the node is the ROS end of it.
 0.067 m across and is round, so its box width is its diameter whatever direction it is
 seen from — no other object in this system has that property. With a pinhole model,
 `range = f · D / d_px`. It degrades gracefully (a ball at 4 m is about 18 px across at
-720p through a 60° lens, still measurable), it needs nothing but the lens, and **the
+720p through the 51° lens, still measurable), it needs nothing but the lens, and **the
 range does not care where the camera is pointing**. The *position* does: the range is a
 length along the ray through the box, and which way that ray runs — and so how high the
 ball is — is the camera's tilt. See "The tilt comes from the neck" below.
@@ -1037,8 +1037,8 @@ ball is — is the camera's tilt. See "The tilt comes from the neck" below.
 its ray meets a known plane — solved for one radius above the floor, since that is where
 the ball's centre is. More accurate close in, worthless near the horizon where a small
 elevation error is a large range error, and it depends on the camera's height and tilt
-being right. Switch to it once `ball.neck.pitch_at_level_deg` has actually been
-measured.
+being right. `ball.neck.pitch_at_level_deg` was measured on 2026-09-15, so it can now be
+tried; compare the two on a run before switching.
 
 Both are computed whenever they can be, one is published, and a persistent disagreement
 is logged **once**, because that is what a wrong camera mounting looks like and there is
@@ -1065,9 +1065,22 @@ pivot-and-lever model `mecanumbot_deep3r` uses for the same servo (`NeckMount`).
 fixed `ball.camera_*` numbers are only the fallback — with a throttled warning — for a
 frame that has no neck reading within `ball.neck.stale_s`. Two things to know:
 
-- **`ball.neck.pitch_at_level_deg` is unmeasured.** Nothing establishes that the trees'
-  `neck_level_pos` (6.0) is optically level. With a ball on the floor and the head
-  there, `floor_pitch` in `ball_locating.py` turns one box into the number to set.
+- **`ball.neck.pitch_at_level_deg` is +4.7°, measured on 2026-09-15.** A ball on the
+  floor ~1 m ahead; the neck held still at 500–600 ticks in 0.1-unit steps, up and then
+  down; `floor_pitch` in `ball_locating.py` on every box, with the lens's measured 51°.
+  Coming down gave +4.4° (±0.3° across positions), going up +5.0° — a couple of ticks
+  of backlash — and a free fit of the slope gave 0.005115 rad/tick, the AX-12A's
+  0.005061 within 1 %. So the trees' `neck_level_pos` (6.0) looks 4.7° up, and the
+  camera is optically level at ~584 ticks. The same number is `head_joint`'s offset in
+  `mecanumbot_sensorproc_node` and `camera.pitch_at_level_deg` in `mecanumbot_deep3r`.
+  Frames with the ball near the top or bottom edge came out a few degrees flatter,
+  which is lens distortion the pinhole model ignores; only boxes well inside the frame
+  were used.
+- **The lens is 51°, not 60°.** Measured the same day: the robot turned ±0.2 rad in
+  place with the ball in front of it, and the ball's pixel shift against odometry yaw
+  gave a focal length of ~1340 px. Two independent checks agree with it — at 60° the
+  neck slope came out 1.2× the AX-12A datasheet's, and the ball placed ~1 m away ranged
+  at 0.73 m; at 51° both are right.
 - **The neck position is the servo's goal, not the servo.** The firmware echoes the last
   command back as `OpenCRState.pos_n` and never reads the AX-12A, so while the head is
   moving a frame is placed with where the head was going. Heights read mid-sweep are
