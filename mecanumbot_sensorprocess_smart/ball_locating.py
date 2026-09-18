@@ -140,8 +140,8 @@ class BallGeometry:
 
     diameter: float = TENNIS_BALL_DIAMETER
     # Camera position in the robot's base frame [m].
-    camera_x: float = 0.13
-    camera_z: float = 0.21
+    camera_x: float = 0.128
+    camera_z: float = 0.2245
     camera_pitch: float = 0.0
     # Where the floor is in that same base frame. base_link sits 0.01 m above
     # base_footprint on this robot, so the floor is a centimetre below it.
@@ -187,9 +187,9 @@ class NeckMount:
     """
 
     pivot_x: float = 0.1063
-    pivot_z: float = 0.1679
+    pivot_z: float = 0.170
     lever_x: float = 0.022
-    lever_z: float = 0.038
+    lever_z: float = 0.0545
     level_ticks: float = 600.0
     rad_per_tick: float = 0.005061
     pitch_at_level: float = 0.0

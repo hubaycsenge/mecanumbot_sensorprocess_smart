@@ -39,7 +39,7 @@ HD = CameraModel(width=1280.0, height=720.0, hfov=math.radians(60.0))
 
 
 def geometry(**overrides):
-    """Return a camera 0.21 m up, looking level, unless a test says otherwise."""
+    """Return a camera 0.2245 m up, looking level, unless a test says otherwise."""
     return BallGeometry(**overrides)
 
 
@@ -272,8 +272,8 @@ def test_the_neck_at_level_puts_the_lens_where_the_fixed_numbers_do():
     """The neck model and `BallGeometry`'s defaults describe the same camera."""
     place = NeckMount().geometry(geometry(), 600)
     assert place.camera_pitch == pytest.approx(0.0)
-    assert place.camera_x == pytest.approx(0.13, abs=0.005)
-    assert place.camera_z == pytest.approx(0.21, abs=0.005)
+    assert place.camera_x == pytest.approx(0.128, abs=0.005)
+    assert place.camera_z == pytest.approx(0.2245, abs=0.005)
 
 
 def test_a_larger_neck_position_looks_further_up():

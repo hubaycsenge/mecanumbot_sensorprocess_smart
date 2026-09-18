@@ -148,8 +148,8 @@ class PersonLocateNode(Node):
         # Where the camera sits in the robot's base frame [m], and where the
         # floor is in it. Parameters, not the URDF: its camera translations
         # were never measured. Measure them on the robot.
-        self.declare_parameter("ball.camera_x", 0.13)
-        self.declare_parameter("ball.camera_z", 0.21)
+        self.declare_parameter("ball.camera_x", 0.128)
+        self.declare_parameter("ball.camera_z", 0.2245)
         self.declare_parameter("ball.camera_pitch_deg", 0.0)
         self.declare_parameter("ball.floor_z", -0.01)
         self.declare_parameter("ball.min_range", 0.15)
@@ -172,9 +172,9 @@ class PersonLocateNode(Node):
         # The same model and numbers as mecanumbot_deep3r's `camera.*`. They
         # describe the same servo, so change both or neither.
         self.declare_parameter("ball.neck.pivot_x", 0.1063)
-        self.declare_parameter("ball.neck.pivot_z", 0.1679)
+        self.declare_parameter("ball.neck.pivot_z", 0.170)
         self.declare_parameter("ball.neck.lever_x", 0.022)
-        self.declare_parameter("ball.neck.lever_z", 0.038)
+        self.declare_parameter("ball.neck.lever_z", 0.0545)
         self.declare_parameter("ball.neck.level_ticks", 600.0)
         self.declare_parameter("ball.neck.rad_per_tick", 0.005061)
         # UNMEASURED: the lens tilt at level_ticks, positive up.

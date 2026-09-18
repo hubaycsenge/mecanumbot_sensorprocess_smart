@@ -327,12 +327,14 @@ mecanumbot_locate_detections:
       range_source: size
 
       # Where the camera sits in the robot's base frame [m], and where the floor
-      # is in it. These are NOT read from the URDF: its camera translations were
-      # never measured, and its camera frame looked along the neck axis until
-      # 2026-09-14. Measure them on the robot. base_link sits 0.01 m above base_footprint, so the floor is a
-      # centimetre below the base frame's origin.
-      camera_x: 0.13
-      camera_z: 0.21
+      # is in it. These are NOT read from the URDF: its camera frame looked
+      # along the neck axis until 2026-09-14. They now agree with it, because
+      # the URDF was corrected to the same measurement. base_link sits 0.01 m
+      # above base_footprint, so the floor is a centimetre below the base
+      # frame's origin, and these are the lens at pitch 0 (neck.pivot_z +
+      # neck.lever_z). camera_z was 0.21, which was 15 mm into the floor.
+      camera_x: 0.128
+      camera_z: 0.2245
       # Positive looks UP. With neck.enabled, camera_x, camera_z and this are
       # only the fallback for a frame with no neck reading: every other frame
       # is placed with the tilt the neck had, because the fetch tree moves it.
@@ -364,10 +366,16 @@ mecanumbot_locate_detections:
         stale_s: 0.5
         # The neck pivot and the pivot-to-lens lever in the base frame [m];
         # the URDF's translations, which at level give camera_x / camera_z.
+        # MEASURED 2026-09-18, tape from the floor with the neck at 550 ticks
+        # (-9.8 deg): the horn screw -- head_joint's own axis -- is 0.180 m up
+        # and the lens is 0.230 m up, so pivot_z is 0.170 and the lever that
+        # reaches the lens is 0.0545. lever_z was 0.038, which put the lens
+        # 21 mm low and every ball with it. lever_x is NOT measured; only the
+        # height was. Same numbers as mecanumbot_deep3r's camera.*.
         pivot_x: 0.1063
-        pivot_z: 0.1679
+        pivot_z: 0.170
         lever_x: 0.022
-        lever_z: 0.038
+        lever_z: 0.0545
         # The trees' neck_level_pos (6.0) in ticks, and the tilt per tick: the
         # AX-12A's 300 deg over 1023 units, which the measurement below
         # reproduced (a free fit gave 0.005115).
