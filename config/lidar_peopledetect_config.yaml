@@ -48,6 +48,10 @@ mecanumbot_lidar_detect_people:
     track_require_motion: true
     track_reseed_memory: 1.5
     track_reseed_distance: 0.5
+    # The frame the tracks live in. It must stand still in the world: in the
+    # scan frame a person following the robot looks motionless (never
+    # published) and furniture it drives past looks like people walking.
+    tracking_frame: mecanumbot/odom
 
 mecanumbot_cam_detect_people_ds:
   ros__parameters:

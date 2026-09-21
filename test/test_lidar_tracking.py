@@ -14,7 +14,12 @@ machine.
 import numpy as np
 import pytest
 
-from mecanumbot_sensorprocess_smart.lidar_tracking import MultiObjectTracker
+from mecanumbot_sensorprocess_smart.lidar_tracking import (
+    MultiObjectTracker,
+    from_frame,
+    nearest_index,
+    to_frame,
+)
 
 DT = 0.2  # one cycle at the 5 Hz inference cap the Orin runs at.
 
@@ -185,3 +190,59 @@ class TestAssociation:
         assert tracker.next_id == 1
         tracker.update(detections((2.0, 4.0)), DT)
         assert tracker.next_id == 2
+
+
+class TestTrackingFrame:
+    """
+    The tracker runs in odom, and the robot is what moves.
+
+    Each case drives the robot and feeds the tracker what the node would: the
+    scan-frame detection carried into odom through the robot's pose.
+    """
+
+    @staticmethod
+    def drive(tracker, world_point_at, steps=15, speed=0.26):
+        """Drive the robot along +x; return the scan-frame view of the last point."""
+        for i in range(steps):
+            pose = (speed * DT * (i + 1), 0.0, 0.0)
+            in_scan = from_frame([world_point_at(i)], *pose)
+            tracker.update(to_frame(in_scan, *pose), DT)
+        return in_scan
+
+    def test_a_person_following_the_robot_is_published(self):
+        # A metre behind a robot at full speed: still in the scan frame, which
+        # is why the scan-frame tracker never published a follower.
+        tracker = MultiObjectTracker()
+        in_scan = self.drive(tracker, lambda i: (0.26 * DT * (i + 1) - 1.0, 0.0))
+        assert np.allclose(in_scan, [[-1.0, 0.0]])
+        assert len(tracker._confirmed_positions()) == 1
+
+    def test_furniture_driven_past_is_not_published(self):
+        # Sweeps through the scan frame at the robot's speed; stands still in odom.
+        tracker = MultiObjectTracker()
+        self.drive(tracker, lambda i: (1.5, 0.5))
+        assert len(tracker._confirmed_positions()) == 0
+
+    def test_turning_on_the_spot_keeps_a_track(self):
+        # A standing person two metres off, while the robot turns 90 degrees in
+        # a second: in the scan frame they jump ~0.6 m per cycle, beyond the gate.
+        tracker = MultiObjectTracker(require_motion=False)
+        person = np.array([[2.0, 0.0]])
+        for i in range(5):
+            pose = (0.0, 0.0, (i + 1) * np.pi / 10)
+            tracker.update(to_frame(from_frame(person, *pose), *pose), DT)
+        assert len(tracker.tracks) == 1
+
+
+class TestFrames:
+    def test_round_trip(self):
+        pose = (1.2, -0.4, 2.1)
+        points = np.array([[0.5, 0.3], [-2.0, 1.0]])
+        assert np.allclose(from_frame(to_frame(points, *pose), *pose), points)
+
+    def test_a_quarter_turn(self):
+        assert np.allclose(to_frame([[1.0, 0.0]], 1.0, 0.0, np.pi / 2), [[1.0, 1.0]])
+
+    def test_nearest_index(self):
+        assert nearest_index([[3.0, 0.0], [0.5, -0.5], [-1.0, 0.0]]) == 1
+        assert nearest_index(np.empty((0, 2))) is None

@@ -31,7 +31,12 @@ import torch
 from dr_spaam.detector import Detector
 from ament_index_python.packages import get_package_share_directory
 
-from mecanumbot_sensorprocess_smart.lidar_tracking import MultiObjectTracker
+from mecanumbot_sensorprocess_smart.lidar_tracking import (
+    MultiObjectTracker,
+    from_frame,
+    nearest_index,
+    to_frame,
+)
 
 # ---- 1. Determine Device Dynamically ----
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -90,6 +95,10 @@ class DrSpaamNode(Node):
         self.declare_parameter("track_require_motion", True)
         self.declare_parameter("track_reseed_memory", 1.5)
         self.declare_parameter("track_reseed_distance", 0.5)
+        # The frame the tracks are kept in. It has to stand still in the world:
+        # see "The tracking frame" in lidar_tracking.py for why the scan frame
+        # made a person following the robot invisible.
+        self.declare_parameter("tracking_frame", "mecanumbot/odom")
 
         self.weight_file = self.get_parameter("weight_file").value
         self.conf_thresh = self.get_parameter("conf_thresh").value
@@ -97,6 +106,7 @@ class DrSpaamNode(Node):
         self.leading_mode = self.get_parameter("leading_mode").value
         self.exclusion_radius = self.get_parameter("obstacle_exclusion_radius").value
         self.detection_frame = str(self.get_parameter("detection_frame").value)
+        self.tracking_frame = str(self.get_parameter("tracking_frame").value)
 
         max_inference_rate = float(self.get_parameter("max_inference_rate").value)
         self.min_inference_period = (
@@ -358,11 +368,13 @@ class DrSpaamNode(Node):
             if self.publish_on_skipped_scans:
                 # Keep `dets` and `subject_pose` flowing at LiDAR rate by
                 # extrapolating the existing tracks instead of re-running the net.
-                self._publish_tracks(
-                    self.tracker.predict_only(dt),
-                    msg,
-                    self._lookup_map_tf(msg) if self.leading_mode else None,
-                )
+                tracking_pose = self._tracking_pose(msg)
+                if tracking_pose is not None:
+                    self._publish_tracks(
+                        self._to_scan(self.tracker.predict_only(dt), tracking_pose),
+                        msg,
+                        self._lookup_map_tf(msg) if self.leading_mode else None,
+                    )
             self._log_perf(now)
             return
 
@@ -391,8 +403,16 @@ class DrSpaamNode(Node):
         # Apply the static map filter using the fetched TF
         dets_xy = self._filter_detections_by_map(dets_xy, tf_map_to_sensor)
 
-        # Filter the raw network detections through the Kalman tracker
-        tracked_xy = self.tracker.update(dets_xy, inference_dt)
+        # Filter the raw network detections through the Kalman tracker, which
+        # works in the world-fixed tracking frame and hands back scan-frame points.
+        tracking_pose = self._tracking_pose(msg)
+        if tracking_pose is None:
+            self._log_perf(now)
+            return
+        tracked_xy = self._to_scan(
+            self.tracker.update(self._to_tracking(dets_xy, tracking_pose), inference_dt),
+            tracking_pose,
+        )
 
         self._publish_tracks(tracked_xy, msg, tf_map_to_sensor)
         self._log_perf(now)
@@ -417,6 +437,38 @@ class DrSpaamNode(Node):
             return True
 
         return False
+
+    def _tracking_pose(self, msg):
+        """
+        Return the scan frame's planar pose ``(x, y, yaw)`` in the tracking frame.
+
+        None when TF cannot place it yet (at start-up, before odometry): the
+        scan is then not tracked at all, since mixing scan-frame and odom-frame
+        points in one tracker would break every track in it.
+        """
+        try:
+            t = self.tf_buffer.lookup_transform(
+                self.tracking_frame, msg.header.frame_id, rclpy.time.Time()
+            ).transform
+        except Exception as e:
+            self.get_logger().warn(
+                f"cannot place the scan in {self.tracking_frame}, not tracking: {e}",
+                throttle_duration_sec=2.0,
+            )
+            return None
+        q = t.rotation
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        return t.translation.x, t.translation.y, yaw
+
+    @staticmethod
+    def _to_tracking(dets_xy, pose):
+        """Scan-frame detections, stored ``[y, x]``, to tracking-frame ``[x, y]``."""
+        return to_frame(np.asarray(dets_xy).reshape(-1, 2)[:, ::-1], *pose)
+
+    @staticmethod
+    def _to_scan(tracked_xy, pose):
+        """Tracking-frame ``[x, y]`` back to this node's scan-frame ``[y, x]``."""
+        return from_frame(tracked_xy, *pose)[:, ::-1]
 
     def _lookup_map_tf(self, msg):
         try:
@@ -483,10 +535,19 @@ class DrSpaamNode(Node):
         self.inference_time_sum = 0.0
 
     def _parse_subject_pose(self, dets_msg, transform):
-        """Calculates pose using the transform passed down from scan_callback."""
+        """
+        Place the person nearest the robot in the map, as the subject.
+
+        Nearest, because the person being led is the one following the robot;
+        the first track in the list was simply whoever the tracker had met first,
+        a bystander or a table leg as often as not.
+        """
+        nearest = dets_msg.poses[
+            nearest_index([(p.position.x, p.position.y) for p in dets_msg.poses])
+        ]
         ps_msg = Pose()
-        ps_msg.position.x = dets_msg.poses[0].position.x
-        ps_msg.position.y = dets_msg.poses[0].position.y
+        ps_msg.position.x = nearest.position.x
+        ps_msg.position.y = nearest.position.y
         ps_msg.position.z = 0.0
 
         pose_out = PoseStamped()

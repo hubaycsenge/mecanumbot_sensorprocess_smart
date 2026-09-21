@@ -165,7 +165,7 @@ by either launch file.
 | Topic                                    | Data type                     | Function                                                                                                                                           |
 | ---------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | dets (configurable by detections_topic)  | geometry_msgs/msg/PoseArray   | Publishes filtered and tracked people detections as 2D poses.                                                                                      |
-| subject_pose                             | geometry_msgs/msg/PoseStamped | Publishes selected leading subject pose transformed into map frame (only when `leading_mode` is enabled).                                          |
+| subject_pose                             | geometry_msgs/msg/PoseStamped | Publishes the leading subject -- the published track **nearest the robot** -- in the map frame (only when `leading_mode` is enabled). Until 2026-09-21 it was whichever track came first in the list. |
 | dets_marker (configurable by rviz_topic) | visualization_msgs/msg/Marker | RViz LINE_LIST circles around tracked detections. Currently disabled — the publisher is commented out and `publish_rviz` is hard-coded to `False`. |
 
 ### Subscribers
@@ -191,6 +191,7 @@ by either launch file.
 | `track_require_motion`      | `true`                   | Only publish a track that has been seen moving. See *Motion, and re-seeding it* below. |
 | `track_reseed_memory`       | `1.5`                    | Seconds a dropped track's motion evidence is kept for its replacement to inherit.     |
 | `track_reseed_distance`     | `0.5`                    | Metres within which a new track counts as the replacement of a dropped one.           |
+| `tracking_frame`            | `mecanumbot/odom`        | World-fixed frame the tracks are kept in. See *Motion, and re-seeding it* below.      |
 
 #### GPU load control
 
@@ -257,6 +258,15 @@ untouched.
 
 `track_require_motion: false` publishes stationary detections outright. That also
 publishes the furniture, which is why it is not the default.
+
+**Motion is measured in `tracking_frame` (odom), not in the scan frame.** Until
+2026-09-21 the tracks lived in the scan frame, so "moving" meant moving *relative to the
+robot*, which is backwards for a leading robot: the person following it keeps pace with it
+and looks still, so they were never published, and the table legs it drives past sweep
+through the frame and look like people walking. Turning on the spot also carried every
+track further than `track_max_distance` in one cycle. The node now carries each scan's
+detections into odom through TF, tracks them there, and carries the tracks back, so `dets`
+is still in the scan frame. Scans that TF cannot place yet (at start-up) are not tracked.
 
 The tracker itself lives in `lidar_tracking.py`, apart from the node, so it can be
 unit-tested on a machine with neither `torch` nor `dr_spaam` installed

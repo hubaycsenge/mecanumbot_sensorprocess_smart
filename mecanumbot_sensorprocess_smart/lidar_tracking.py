@@ -38,6 +38,17 @@ inherit ``hits``, so it still has to be seen ``min_hits`` times before it is
 published - the re-seed restores what was already established about this
 person, and proves the rest again.
 
+The tracking frame
+------------------
+Tracks are kept in a frame fixed to the world (odom), not in the scan frame.
+In the scan frame the motion gate measures motion *relative to the robot*, and
+that is wrong both ways round for a leading robot: the person following it
+walks along with it and so looks still - never published - while the table
+legs it drives past sweep through the frame and look like people walking.
+Turning on the spot moved every track further than the association gate as
+well. ``to_frame`` / ``from_frame`` carry the points between the two; the node
+supplies the transform.
+
 No ROS and no torch: this is plain numpy, filterpy and scipy, so it can be
 tested on a development machine where neither ``dr_spaam`` nor CUDA exists.
 """
@@ -45,6 +56,34 @@ tested on a development machine where neither ``dr_spaam`` nor CUDA exists.
 import numpy as np
 from filterpy.kalman import KalmanFilter
 from scipy.optimize import linear_sum_assignment
+
+
+def to_frame(points, tx, ty, yaw):
+    """Map ``(N, 2)`` x/y points through the planar pose ``(tx, ty, yaw)``."""
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    c, s = np.cos(yaw), np.sin(yaw)
+    return np.column_stack(
+        (
+            tx + c * points[:, 0] - s * points[:, 1],
+            ty + s * points[:, 0] + c * points[:, 1],
+        )
+    )
+
+
+def from_frame(points, tx, ty, yaw):
+    """Undo `to_frame`: bring points back into the frame the pose is of."""
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    dx, dy = points[:, 0] - tx, points[:, 1] - ty
+    c, s = np.cos(yaw), np.sin(yaw)
+    return np.column_stack((c * dx + s * dy, -s * dx + c * dy))
+
+
+def nearest_index(points):
+    """Index of the ``(N, 2)`` point closest to the origin, or None if none."""
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    if len(points) == 0:
+        return None
+    return int(np.argmin(np.hypot(points[:, 0], points[:, 1])))
 
 
 class Track:
