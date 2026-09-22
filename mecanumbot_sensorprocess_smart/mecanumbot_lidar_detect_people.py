@@ -142,8 +142,6 @@ class DrSpaamNode(Node):
 
         pkg_share = get_package_share_directory("mecanumbot_sensorprocess_smart")
         weight_path = os.path.join(pkg_share, "models", self.weight_file)
-        self.pose_out = None
-        self.last_pose_out = None
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -484,20 +482,20 @@ class DrSpaamNode(Node):
         dets_msg.header = msg.header
         self.dets_pub.publish(dets_msg)
 
-        # Use the already fetched TF to avoid a second lookup
+        # Only a pose placed from this scan's tracks goes out. Republishing
+        # the last one when there are none kept a person who had left on the
+        # topic for minutes, at full rate, with a stamp that never moved --
+        # healthy to any rate monitor, and trusted by anything that did not
+        # check the stamp. Consumers that want the last known place keep it.
+        # Use the already fetched TF to avoid a second lookup.
         if (
             self.leading_mode
             and len(dets_msg.poses) > 0
             and tf_map_to_sensor is not None
         ):
-            self.pose_out = self._parse_subject_pose(dets_msg, tf_map_to_sensor)
-
-        if self.leading_mode:
-            if self.pose_out is not None:
-                self.last_pose_out = self.pose_out
-                self.subject_pub.publish(self.pose_out)
-            elif self.last_pose_out is not None:
-                self.subject_pub.publish(self.last_pose_out)
+            pose_out = self._parse_subject_pose(dets_msg, tf_map_to_sensor)
+            if pose_out is not None:
+                self.subject_pub.publish(pose_out)
 
         # Avoid generating heavy marker logic if we aren't publishing it
         if self.publish_rviz:

@@ -229,8 +229,10 @@ by either launch file.
 - Tracks the survivors with a Kalman filter plus Hungarian assignment; a track is only
   published once it has at least `track_min_hits` hits **and** has exceeded 0.1 m/s at
   some point, so stationary false positives are suppressed.
-- Uses TF from the scan frame to `map` for the `subject_pose` output, and keeps
-  republishing the last known subject pose when no new one can be computed.
+- Uses TF from the scan frame to `map` for the `subject_pose` output, and
+  publishes it only for a scan that has a confirmed track to place. With none,
+  the topic goes quiet. Until 2026-09-22 it kept republishing the last pose
+  with its old stamp, so a person who had left stayed on the topic for minutes.
 - Spins on a `MultiThreadedExecutor`.
 
 ### Motion, and re-seeding it
