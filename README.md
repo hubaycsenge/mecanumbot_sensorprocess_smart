@@ -192,6 +192,7 @@ by either launch file.
 | `track_reseed_memory`       | `1.5`                    | Seconds a dropped track's motion evidence is kept for its replacement to inherit.     |
 | `track_reseed_distance`     | `0.5`                    | Metres within which a new track counts as the replacement of a dropped one.           |
 | `tracking_frame`            | `mecanumbot/odom`        | World-fixed frame the tracks are kept in. See *Motion, and re-seeding it* below.      |
+| `track_motion_yaw_rate_limit` | `0.15`                 | Robot yaw rate in rad/s above which motion stops counting as evidence. `0.0` disables. See *The rotation loophole* below. |
 
 #### GPU load control
 
@@ -269,6 +270,34 @@ through the frame and look like people walking. Turning on the spot also carried
 track further than `track_max_distance` in one cycle. The node now carries each scan's
 detections into odom through TF, tracks them there, and carries the tracks back, so `dets`
 is still in the scan frame. Scans that TF cannot place yet (at start-up) are not tracked.
+
+#### The rotation loophole
+
+Tracking in odom fixes the two errors above and opens a third. A detection that holds a
+roughly constant *robot-frame* bearing while the robot turns on the spot sweeps an arc in
+odom, and the odom speed of that arc is `omega * range` — at the 0.39 rad/s the leading
+trees spin at and the 0.87 m the detections sat at, about 0.34 m/s. That is walking pace
+and more than three times the 0.1 m/s motion threshold, so **the gate that exists to
+reject furniture was being satisfied by the robot's own rotation**. In the bags of
+2026-09-22 and 2026-09-23, 70–94% of every published detection behaved that way, at a
+median bearing of 18–19° and, in one bag, on the robot's left in 171 cases out of 171.
+The manoeuvre that produced them is the leading trees' look-back — so the spin the robot
+performs *in order to check whether the human is still following* was manufacturing the
+evidence that answered the question.
+
+`track_motion_yaw_rate_limit` closes it. While the robot turns faster than that, a track
+is still updated and still expires, but nothing it does counts as having been seen
+moving, and a re-seed may not inherit motion evidence either — a spin drops and replaces
+tracks constantly, so the ghost path is the other way the same rotation could launder
+itself into a person. Evidence earned before the turn is kept, because it was earned
+honestly: a person who walked in and then stood still is not forgotten every time the
+robot turns to look at them.
+
+The default of `0.15` rad/s (8.6 °/s) sits above ordinary path following — the median
+yaw rate over the 2026-09-23 bag was 4.6 °/s — and well below an in-place turn, whose
+median at the detections in that bag was 22.7 °/s. `0.0` restores the old behaviour, and
+`test/test_lidar_tracking.py::TestRotationLoophole` keeps a test for it so the loophole
+cannot be reopened silently.
 
 The tracker itself lives in `lidar_tracking.py`, apart from the node, so it can be
 unit-tested on a machine with neither `torch` nor `dr_spaam` installed

@@ -49,6 +49,30 @@ Turning on the spot moved every track further than the association gate as
 well. ``to_frame`` / ``from_frame`` carry the points between the two; the node
 supplies the transform.
 
+The rotation loophole
+---------------------
+
+The odom frame fixes the two errors above and opens a third, which the bags
+recorded on 2026-09-22 and 2026-09-23 are full of. A detection that holds a
+roughly constant *robot-frame* bearing while the robot turns on the spot
+sweeps an arc in odom, and the odom speed of that arc is ``omega * r`` - at
+the 0.39 rad/s the trees spin at and the 0.87 m the detections sat at, about
+0.34 m/s, which is walking pace and three times the motion threshold. So the
+gate that exists to reject furniture was being satisfied by the robot's own
+rotation, and in those bags 70-94% of every detection the tracker published
+behaved that way. Worse, the whole point of a spin in the leading trees is to
+check whether the human is still there, so the manoeuvre manufactured the
+evidence that answered it.
+
+``motion_yaw_rate_limit`` closes it: while the robot is turning faster than
+that, a track may still be *updated* and may still *expire*, but nothing it
+does counts as having been seen moving, and a re-seed may not inherit motion
+evidence either - a spin drops and replaces tracks constantly, so the ghost
+path is the other way the same rotation could launder itself into a person.
+Motion evidence already earned is kept, because it was earned honestly; a
+person who walked before the spin is still a person during it. Set the limit
+to 0.0 to go back to believing any motion, whatever the robot was doing.
+
 No ROS and no torch: this is plain numpy, filterpy and scipy, so it can be
 tested on a development machine where neither ``dr_spaam`` nor CUDA exists.
 """
@@ -126,8 +150,15 @@ class Track:
         self.time_since_update += dt
         return self.position
 
-    def update(self, detection):
-        """Fold one detection into the estimate."""
+    def update(self, detection, allow_motion_evidence=True):
+        """Fold one detection into the estimate.
+
+        `allow_motion_evidence` False still folds the measurement in - the
+        estimate has to keep following the person - but refuses to conclude
+        anything from the velocity that comes out of it, because the robot was
+        turning fast enough for its own rotation to account for the speed. See
+        the module docstring.
+        """
         self.kf.update(detection.reshape(2, 1))
         self.time_since_update = 0.0
         self.hits += 1
@@ -136,7 +167,7 @@ class Track:
         vy = self.kf.x[3, 0]
         speed = np.hypot(vx, vy)
 
-        if speed > self.speed_thresh:
+        if allow_motion_evidence and speed > self.speed_thresh:
             self.has_moved = True
 
 
@@ -168,12 +199,17 @@ class MultiObjectTracker:
         require_motion=True,
         reseed_memory=1.5,
         reseed_distance=None,
+        motion_yaw_rate_limit=0.15,
     ):
         """Configure association, confirmation and the re-seed memory.
 
         `reseed_distance` defaults to `max_distance`: a replacement further off
         than the association gate is a different object, not the same one seen
         again.
+
+        `motion_yaw_rate_limit` is the robot's own yaw rate, in rad/s, above
+        which motion is no longer evidence of anything: see the rotation
+        loophole in the module docstring. 0.0 disables the check.
         """
         self.max_distance = max_distance
         self.max_missed_time = max_missed_time
@@ -183,6 +219,7 @@ class MultiObjectTracker:
         self.reseed_distance = (
             max_distance if reseed_distance is None else reseed_distance
         )
+        self.motion_yaw_rate_limit = motion_yaw_rate_limit
         self.tracks = []
         self.ghosts = []
         self.next_id = 0
@@ -210,11 +247,16 @@ class MultiObjectTracker:
                 return True
         return False
 
-    def _spawn(self, detection):
-        """Add a track for an unmatched detection, re-seeding it if it can be."""
-        self.tracks.append(
-            Track(detection, self.next_id, self._inherited_motion(detection))
-        )
+    def _spawn(self, detection, allow_inherit=True):
+        """Add a track for an unmatched detection, re-seeding it if it can be.
+
+        `allow_inherit` False starts the track with no motion evidence even
+        where a ghost would have supplied some: the robot was turning, and a
+        spin drops and replaces tracks fast enough that inheritance would carry
+        rotation-made evidence across the gap the spin itself opened.
+        """
+        inherited = allow_inherit and self._inherited_motion(detection)
+        self.tracks.append(Track(detection, self.next_id, inherited))
         self.next_id += 1
 
     def _expire(self, dt):
@@ -243,8 +285,22 @@ class MultiObjectTracker:
         self._expire(dt)
         return self._confirmed_positions()
 
-    def update(self, detections, dt):
-        """Fold one inference's detections in and return the confirmed people."""
+    def turning(self, yaw_rate):
+        """Say whether the robot's own rotation can account for a track's speed."""
+        return (
+            self.motion_yaw_rate_limit > 0.0
+            and abs(float(yaw_rate)) > self.motion_yaw_rate_limit
+        )
+
+    def update(self, detections, dt, yaw_rate=0.0):
+        """Fold one inference's detections in and return the confirmed people.
+
+        `yaw_rate` is the robot's own yaw rate in rad/s over this interval. The
+        default of 0.0 is "the robot was not turning", which is the behaviour
+        every caller had before the rotation loophole was closed.
+        """
+        rotating = self.turning(yaw_rate)
+
         if len(self.tracks) == 0:
             predicted_positions = np.empty((0, 2))
         else:
@@ -265,10 +321,12 @@ class MultiObjectTracker:
                     unmatched_detections.remove(d_idx)
 
         for t_idx, d_idx in matched_indices:
-            self.tracks[t_idx].update(detections[d_idx])
+            self.tracks[t_idx].update(
+                detections[d_idx], allow_motion_evidence=not rotating
+            )
 
         for d_idx in unmatched_detections:
-            self._spawn(detections[d_idx])
+            self._spawn(detections[d_idx], allow_inherit=not rotating)
 
         self._expire(dt)
 

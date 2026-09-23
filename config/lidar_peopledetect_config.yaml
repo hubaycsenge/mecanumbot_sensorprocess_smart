@@ -48,6 +48,22 @@ mecanumbot_lidar_detect_people:
     track_require_motion: true
     track_reseed_memory: 1.5
     track_reseed_distance: 0.5
+    # The robot's own yaw rate [rad/s] above which motion stops being evidence.
+    # Tracking in odom stops furniture the robot drives past from looking like
+    # people, but turning on the spot is the case it does not cover: a
+    # detection that holds a fixed bearing while the robot spins sweeps an arc
+    # in odom at `omega * range`, and the bags of 2026-09-22/23 are full of
+    # that -- 70-94% of everything published, at ~0.39 rad/s and ~0.87 m, which
+    # is 0.34 m/s, three times the 0.1 m/s motion threshold. Since the trees
+    # spin precisely in order to check whether the human is still there, the
+    # check was manufacturing its own answer.
+    #   0.15 rad/s = 8.6 deg/s sits above the yaw of ordinary path following
+    #   (median 4.6 deg/s over the 2026-09-23 bag) and well below an in-place
+    #   turn (median 22.7 deg/s at the detections in it).
+    # Raising it lets more rotation count as evidence; 0.0 disables the check.
+    # Tracks keep motion evidence earned before a turn, and are still updated
+    # and still expire during one -- only the conclusion is withheld.
+    track_motion_yaw_rate_limit: 0.15
     # The frame the tracks live in. It must stand still in the world: in the
     # scan frame a person following the robot looks motionless (never
     # published) and furniture it drives past looks like people walking.

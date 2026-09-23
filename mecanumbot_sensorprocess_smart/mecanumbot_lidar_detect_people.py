@@ -83,6 +83,12 @@ class DrSpaamNode(Node):
         self.declare_parameter("track_max_distance", 0.5)
         self.declare_parameter("track_max_missed_time", 0.4)
         self.declare_parameter("track_min_hits", 2)
+        # Robot yaw rate [rad/s] above which a track's speed is no longer taken
+        # as evidence that anything moved: turning on the spot makes a
+        # detection at a fixed bearing sweep an arc in the tracking frame at
+        # `omega * range`, which is walking pace at the ranges people are
+        # detected. 0.0 restores the old, credulous behaviour.
+        self.declare_parameter("track_motion_yaw_rate_limit", 0.15)
         # A track is only published once it has been seen moving, which is what
         # keeps table legs and door frames out of `dets`. Close to the robot
         # that gate misfires: the two legs of a person standing half a metre
@@ -168,7 +174,15 @@ class DrSpaamNode(Node):
             require_motion=bool(self.get_parameter("track_require_motion").value),
             reseed_memory=float(self.get_parameter("track_reseed_memory").value),
             reseed_distance=float(self.get_parameter("track_reseed_distance").value),
+            motion_yaw_rate_limit=float(
+                self.get_parameter("track_motion_yaw_rate_limit").value
+            ),
         )
+
+        # Previous tracking-frame yaw, for the robot's own rotation rate. The
+        # tracker needs it to tell a person walking from a detection that only
+        # appears to move because the robot turned under it.
+        self.last_tracking_yaw = None
 
         # Inference scheduling / perf bookkeeping
         self.last_inference_time = None
@@ -408,7 +422,11 @@ class DrSpaamNode(Node):
             self._log_perf(now)
             return
         tracked_xy = self._to_scan(
-            self.tracker.update(self._to_tracking(dets_xy, tracking_pose), inference_dt),
+            self.tracker.update(
+                self._to_tracking(dets_xy, tracking_pose),
+                inference_dt,
+                self._tracking_yaw_rate(tracking_pose[2], inference_dt),
+            ),
             tracking_pose,
         )
 
@@ -445,8 +463,8 @@ class DrSpaamNode(Node):
         points in one tracker would break every track in it.
         """
         try:
-            t = self.tf_buffer.lookup_transform(
-                self.tracking_frame, msg.header.frame_id, rclpy.time.Time()
+            t = self._lookup_at_scan_time(
+                self.tracking_frame, msg.header.frame_id, msg.header.stamp
             ).transform
         except Exception as e:
             self.get_logger().warn(
@@ -458,6 +476,24 @@ class DrSpaamNode(Node):
         yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
         return t.translation.x, t.translation.y, yaw
 
+    def _tracking_yaw_rate(self, yaw, dt):
+        """
+        Return the robot's own yaw rate [rad/s] since the last inference.
+
+        Differentiated from the scan frame's pose in the tracking frame, which
+        is looked up for the tracker anyway, so this costs no extra TF work.
+        The first inference has nothing to difference against and reports 0.0,
+        which is the permissive answer: one cycle of the old behaviour at
+        start-up cannot confirm a track on its own, because `min_hits` has not
+        been met yet either.
+        """
+        previous = self.last_tracking_yaw
+        self.last_tracking_yaw = yaw
+        if previous is None or dt <= 0.0:
+            return 0.0
+        delta = math.atan2(math.sin(yaw - previous), math.cos(yaw - previous))
+        return delta / dt
+
     @staticmethod
     def _to_tracking(dets_xy, pose):
         """Scan-frame detections, stored ``[y, x]``, to tracking-frame ``[x, y]``."""
@@ -468,10 +504,43 @@ class DrSpaamNode(Node):
         """Tracking-frame ``[x, y]`` back to this node's scan-frame ``[y, x]``."""
         return from_frame(tracked_xy, *pose)[:, ::-1]
 
-    def _lookup_map_tf(self, msg):
+    def _lookup_at_scan_time(self, target, source, stamp):
+        """
+        Look `source` up in `target` at the scan's own stamp, not at "latest".
+
+        `rclpy.time.Time()` asks TF for the newest transform it holds, which is
+        not the one that was true when the scan was taken. Standing still that
+        costs nothing. Turning, it is the difference between a static object
+        and a moving one: at the 0.39 rad/s the trees spin at, 50 ms of
+        mismatch is 1.1 deg of yaw, which swings a return at 1 m through about
+        2 cm -- and 2 cm per 5 Hz tracker cycle is 0.1 m/s, exactly the speed
+        above which `lidar_tracking.Track` concludes that something moved. So
+        the furniture acquired motion evidence purely from the robot turning
+        under it, which is how a static occluder came to be published as a
+        person in the bags of 2026-09-22 and 2026-09-23.
+
+        No timeout: TF runs at ~78 Hz and the scan has already waited for an
+        inference, so the transform is normally in the buffer already. When it
+        is not -- at start-up, or if TF stalls -- the newest transform is still
+        better than refusing to track, so that is the fallback, with a warning,
+        and the rotation gate in the tracker is what limits the damage.
+        """
         try:
             return self.tf_buffer.lookup_transform(
-                "map", msg.header.frame_id, rclpy.time.Time()
+                target, source, rclpy.time.Time.from_msg(stamp)
+            )
+        except Exception as error:
+            self.get_logger().warn(
+                f"no {target} <- {source} at the scan's stamp ({error}); "
+                "falling back to the latest transform",
+                throttle_duration_sec=5.0,
+            )
+            return self.tf_buffer.lookup_transform(target, source, rclpy.time.Time())
+
+    def _lookup_map_tf(self, msg):
+        try:
+            return self._lookup_at_scan_time(
+                "map", msg.header.frame_id, msg.header.stamp
             )
         except Exception as e:
             self.get_logger().warn(f"TF error: {e}", throttle_duration_sec=2.0)
