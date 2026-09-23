@@ -17,6 +17,7 @@ import pytest
 from mecanumbot_sensorprocess_smart.lidar_tracking import (
     MultiObjectTracker,
     Track,
+    stamp_gap_seconds,
     from_frame,
     nearest_index,
     to_frame,
@@ -367,3 +368,52 @@ class TestRotationLoophole:
         assert tracker.turning(-0.39)
         assert not tracker.turning(0.05)
         assert not MultiObjectTracker(motion_yaw_rate_limit=0.0).turning(10.0)
+
+
+class TestStampGap:
+    """
+    Comparing a scan's stamp with a transform's.
+
+    The gap decides whether falling back to the newest transform is routine or
+    worth a warning: `odom` at 50 Hz means the newest one is up to 20 ms old,
+    while the scan is stamped now, so asking TF for the scan's own time is
+    asking for the future and is refused. That fallback costs 0.2 deg of yaw at
+    a spin's rate -- 4 mm at 1 m -- so it is not the error the scan-time lookup
+    exists to prevent, and it must not fill the log.
+    """
+
+    class Stamp:
+        """The `.sec` / `.nanosec` of a `builtin_interfaces/Time`."""
+
+        def __init__(self, sec, nanosec):
+            self.sec = sec
+            self.nanosec = nanosec
+
+    def test_a_scan_ahead_of_the_transform_is_positive(self):
+        gap = stamp_gap_seconds(self.Stamp(10, 500_000_000), self.Stamp(10, 490_000_000))
+        assert gap == pytest.approx(0.01)
+
+    def test_a_scan_behind_the_transform_is_negative(self):
+        gap = stamp_gap_seconds(self.Stamp(10, 490_000_000), self.Stamp(10, 500_000_000))
+        assert gap == pytest.approx(-0.01)
+
+    def test_it_carries_across_a_second_boundary(self):
+        gap = stamp_gap_seconds(self.Stamp(11, 5_000_000), self.Stamp(10, 995_000_000))
+        assert gap == pytest.approx(0.01)
+
+    def test_identical_stamps_are_no_gap(self):
+        assert stamp_gap_seconds(self.Stamp(7, 123), self.Stamp(7, 123)) == 0.0
+
+    def test_the_gap_seen_at_the_lab_is_inside_the_default_tolerance(self):
+        # The real numbers from the warning: requested 1790161555.820934,
+        # newest 1790161555.811217. One odom period, and the reason the default
+        # tolerance is 0.02 s rather than something tighter.
+        gap = stamp_gap_seconds(
+            self.Stamp(1790161555, 820_934_000), self.Stamp(1790161555, 811_217_000)
+        )
+        assert gap == pytest.approx(0.0097, abs=1e-4)
+        assert 0.0 <= gap <= 0.02
+
+    def test_a_real_stall_is_outside_it(self):
+        gap = stamp_gap_seconds(self.Stamp(12, 0), self.Stamp(10, 0))
+        assert gap > 0.02

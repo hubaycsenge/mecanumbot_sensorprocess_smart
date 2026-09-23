@@ -331,3 +331,17 @@ class MultiObjectTracker:
         self._expire(dt)
 
         return self._confirmed_positions()
+
+
+def stamp_gap_seconds(later, earlier):
+    """
+    Seconds from `earlier` to `later`, for two `builtin_interfaces/Time`.
+
+    Positive means `later` really is later. Written out rather than going
+    through `rclpy.time.Time` so that it stays usable, and testable, without a
+    ROS installation -- the only thing it needs from a stamp is `.sec` and
+    `.nanosec`.
+    """
+    return (float(later.sec) - float(earlier.sec)) + (
+        float(later.nanosec) - float(earlier.nanosec)
+    ) * 1e-9

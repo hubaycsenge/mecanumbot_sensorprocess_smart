@@ -64,6 +64,15 @@ mecanumbot_lidar_detect_people:
     # Tracks keep motion evidence earned before a turn, and are still updated
     # and still expire during one -- only the conclusion is withheld.
     track_motion_yaw_rate_limit: 0.15
+    # Transforms are looked up at the scan's own stamp rather than at "latest",
+    # because on a turning robot the newest transform is not the one that was
+    # true when the scan was taken, and the difference is what made static
+    # furniture look like it was walking. But `odom` is published at ~50 Hz and
+    # the scan is stamped now, so the lookup routinely asks for a time up to one
+    # odom period in the future and tf2 refuses it. A fallback to the newest
+    # transform within this many seconds is normal and silent; beyond it, TF has
+    # actually stalled and is worth a warning.
+    tf_future_tolerance: 0.02
     # The frame the tracks live in. It must stand still in the world: in the
     # scan frame a person following the robot looks motionless (never
     # published) and furniture it drives past looks like people walking.

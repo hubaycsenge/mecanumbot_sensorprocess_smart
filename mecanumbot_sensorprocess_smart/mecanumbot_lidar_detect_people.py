@@ -35,6 +35,7 @@ from mecanumbot_sensorprocess_smart.lidar_tracking import (
     MultiObjectTracker,
     from_frame,
     nearest_index,
+    stamp_gap_seconds,
     to_frame,
 )
 
@@ -89,6 +90,11 @@ class DrSpaamNode(Node):
         # `omega * range`, which is walking pace at the ranges people are
         # detected. 0.0 restores the old, credulous behaviour.
         self.declare_parameter("track_motion_yaw_rate_limit", 0.15)
+        # How far into the future of the newest transform a scan's stamp may
+        # sit before the fallback to that transform is worth warning about.
+        # One `odom` period (~20 ms at 50 Hz) is the routine case; see
+        # `_lookup_at_scan_time`.
+        self.declare_parameter("tf_future_tolerance", 0.02)
         # A track is only published once it has been seen moving, which is what
         # keeps table legs and door frames out of `dets`. Close to the robot
         # that gate misfires: the two legs of a person standing half a metre
@@ -113,6 +119,9 @@ class DrSpaamNode(Node):
         self.exclusion_radius = self.get_parameter("obstacle_exclusion_radius").value
         self.detection_frame = str(self.get_parameter("detection_frame").value)
         self.tracking_frame = str(self.get_parameter("tracking_frame").value)
+        self.tf_future_tolerance = float(
+            self.get_parameter("tf_future_tolerance").value
+        )
 
         max_inference_rate = float(self.get_parameter("max_inference_rate").value)
         self.min_inference_period = (
@@ -519,23 +528,37 @@ class DrSpaamNode(Node):
         under it, which is how a static occluder came to be published as a
         person in the bags of 2026-09-22 and 2026-09-23.
 
-        No timeout: TF runs at ~78 Hz and the scan has already waited for an
-        inference, so the transform is normally in the buffer already. When it
-        is not -- at start-up, or if TF stalls -- the newest transform is still
-        better than refusing to track, so that is the fallback, with a warning,
-        and the rotation gate in the tracker is what limits the damage.
+        No timeout, because a blocking one would not work here: the TF listener
+        shares this node's default callback group, so waiting inside the scan
+        callback stops the very subscription the wait depends on.
+
+        That makes one failure routine rather than exceptional. `odom` is
+        published at about 50 Hz, so the newest transform is up to 20 ms old,
+        while the scan is stamped now -- and on the scans where the inference
+        was skipped there is no inference latency for TF to catch up during. So
+        the lookup asks for a time up to one TF period in the future and tf2
+        refuses it. Falling back to the latest transform there is not the error
+        this method exists to prevent: 20 ms at the 0.39 rad/s of a spin is
+        0.2 degrees, which moves a return at 1 m by 4 mm -- an order of
+        magnitude under the 2 cm that made static furniture look like it was
+        walking. So a gap inside `tf_future_tolerance` is taken quietly, and
+        only a real stall is worth a warning.
         """
         try:
             return self.tf_buffer.lookup_transform(
                 target, source, rclpy.time.Time.from_msg(stamp)
             )
         except Exception as error:
+            latest = self.tf_buffer.lookup_transform(target, source, rclpy.time.Time())
+            gap = stamp_gap_seconds(stamp, latest.header.stamp)
+            if 0.0 <= gap <= self.tf_future_tolerance:
+                return latest
             self.get_logger().warn(
-                f"no {target} <- {source} at the scan's stamp ({error}); "
-                "falling back to the latest transform",
+                f"no {target} <- {source} at the scan's stamp, and the newest one "
+                f"is {gap:+.3f}s away ({error}); falling back to it",
                 throttle_duration_sec=5.0,
             )
-            return self.tf_buffer.lookup_transform(target, source, rclpy.time.Time())
+            return latest
 
     def _lookup_map_tf(self, msg):
         try:
