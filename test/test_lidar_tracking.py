@@ -16,6 +16,7 @@ import pytest
 
 from mecanumbot_sensorprocess_smart.lidar_tracking import (
     MultiObjectTracker,
+    Track,
     from_frame,
     nearest_index,
     to_frame,
@@ -246,3 +247,123 @@ class TestFrames:
     def test_nearest_index(self):
         assert nearest_index([[3.0, 0.0], [0.5, -0.5], [-1.0, 0.0]]) == 1
         assert nearest_index(np.empty((0, 2))) is None
+
+
+class TestRotationLoophole:
+    """What the robot's own turning may and may not be taken to prove.
+
+    Tracking in odom stops the furniture a driving robot passes from looking
+    like people. It does not cover turning on the spot: a detection that keeps
+    a fixed bearing while the robot spins sweeps an arc in odom at `omega * r`,
+    which at the ranges and spin rates of the 2026-09-22/23 bags is walking
+    pace. These are the claims that close that, and the ones that make sure it
+    is closed no further than that -- a leading tree spins exactly when it most
+    needs to see a person.
+    """
+
+    SPIN = 0.39  # rad/s, the in-place turn rate in the leading trees.
+    RANGE = 0.87  # m, the range every artefact detection in those bags sat at.
+
+    def spin_in_place(self, tracker, steps=12, yaw_rate=SPIN, radius=RANGE, dt=DT):
+        """Sweep a fixed-bearing return around the robot, as a spin does.
+
+        The robot stands still and turns; a detection the robot carries with it
+        traces a circle of `radius` in the tracking frame. Nothing has moved in
+        the room, so nothing here is a person.
+        """
+        angle = 0.0
+        for _ in range(steps):
+            angle += yaw_rate * dt
+            point = (radius * np.cos(angle), radius * np.sin(angle))
+            tracker.update(detections(point), dt, yaw_rate)
+        return tracker
+
+    def test_a_spin_does_not_manufacture_a_person(self):
+        tracker = MultiObjectTracker()
+        self.spin_in_place(tracker)
+        assert len(tracker._confirmed_positions()) == 0
+
+    def test_without_the_limit_the_spin_does_manufacture_one(self):
+        # The behaviour every bag before this was recorded with. Kept as a test
+        # so the loophole cannot be reopened without a red light.
+        tracker = MultiObjectTracker(motion_yaw_rate_limit=0.0)
+        self.spin_in_place(tracker)
+        assert len(tracker._confirmed_positions()) == 1
+
+    def test_the_arc_really_is_fast_enough_to_have_fooled_the_gate(self):
+        # Guards the premise rather than the fix: if the arc were slower than
+        # the motion threshold there would have been no loophole, and the two
+        # tests above would pass for the wrong reason.
+        speed_thresh = Track(np.array([0.0, 0.0]), 0).speed_thresh
+        assert self.SPIN * self.RANGE > speed_thresh
+
+    def test_a_person_who_walked_before_the_spin_survives_it(self):
+        # Motion evidence already earned was earned honestly. Losing it here
+        # would mean the robot forgets the human every time it turns to check
+        # on them, which is the manoeuvre this whole gate exists to serve.
+        tracker = MultiObjectTracker()
+        walk(tracker, (2.0, 0.0), steps=6, speed=0.9)
+        assert len(tracker._confirmed_positions()) == 1
+        for _ in range(6):
+            tracker.update(detections((2.9, 0.0)), DT, self.SPIN)
+        assert len(tracker._confirmed_positions()) == 1
+
+    def test_a_person_walking_after_the_spin_is_still_found(self):
+        # The gate withholds a conclusion; it does not poison the track. Once
+        # the robot stops turning the same person earns their evidence.
+        tracker = MultiObjectTracker()
+        self.spin_in_place(tracker)
+        assert len(tracker._confirmed_positions()) == 0
+        walk(tracker, (0.87, 0.0), steps=8, speed=0.9)
+        assert len(tracker._confirmed_positions()) == 1
+
+    def test_slow_turning_still_counts_as_evidence(self):
+        # Ordinary path following yaws gently and must not be swept up: the
+        # median over the 2026-09-23 bag was 4.6 deg/s, well under the limit.
+        tracker = MultiObjectTracker()
+        walk_rate = np.radians(4.6)
+        position = np.array([2.0, 0.0])
+        for _ in range(8):
+            position = position + np.array([0.9 * DT, 0.0])
+            tracker.update(detections(position), DT, walk_rate)
+        assert len(tracker._confirmed_positions()) == 1
+
+    def test_a_spin_cannot_launder_evidence_through_a_reseed(self):
+        # The other way the same rotation could get in: a spin drops and
+        # replaces tracks constantly, and a replacement inherits the ghost's
+        # motion. That inheritance is refused while the robot is turning.
+        tracker = MultiObjectTracker(motion_yaw_rate_limit=0.0)
+        self.spin_in_place(tracker)  # a ghost with has_moved, made by rotation
+        assert len(tracker._confirmed_positions()) == 1
+        tracker.motion_yaw_rate_limit = 0.15
+        for _ in range(4):
+            tracker.update(detections(), DT, TestRotationLoophole.SPIN)
+        assert tracker.tracks == []
+        for _ in range(6):
+            tracker.update(detections((0.87, 0.02)), DT, TestRotationLoophole.SPIN)
+        assert len(tracker._confirmed_positions()) == 0
+
+    def test_a_reseed_while_standing_still_is_untouched(self):
+        # The close-range flicker case must keep working: it is the reason the
+        # re-seed exists, and the robot is not turning while it happens. The
+        # person has to have stopped before the flicker, or the estimate coasts
+        # away at walking speed while the track is missing and the ghost is
+        # left too far from the return that replaces it to lend it anything --
+        # which is the tracker behaving correctly, not the gate.
+        tracker = MultiObjectTracker()
+        walk(tracker, (2.0, 0.0), steps=6, speed=0.9)
+        for _ in range(5):
+            tracker.update(detections((3.08, 0.0)), DT)
+        for _ in range(4):
+            tracker.update(detections(), DT)
+        assert tracker.tracks == []
+        for _ in range(2):
+            tracker.update(detections((3.10, 0.0)), DT)
+        assert len(tracker._confirmed_positions()) == 1
+
+    def test_turning_is_a_question_about_the_limit(self):
+        tracker = MultiObjectTracker(motion_yaw_rate_limit=0.15)
+        assert tracker.turning(0.39)
+        assert tracker.turning(-0.39)
+        assert not tracker.turning(0.05)
+        assert not MultiObjectTracker(motion_yaw_rate_limit=0.0).turning(10.0)

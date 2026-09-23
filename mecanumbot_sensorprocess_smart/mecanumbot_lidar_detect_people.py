@@ -83,6 +83,12 @@ class DrSpaamNode(Node):
         self.declare_parameter("track_max_distance", 0.5)
         self.declare_parameter("track_max_missed_time", 0.4)
         self.declare_parameter("track_min_hits", 2)
+        # Robot yaw rate [rad/s] above which a track's speed is no longer taken
+        # as evidence that anything moved: turning on the spot makes a
+        # detection at a fixed bearing sweep an arc in the tracking frame at
+        # `omega * range`, which is walking pace at the ranges people are
+        # detected. 0.0 restores the old, credulous behaviour.
+        self.declare_parameter("track_motion_yaw_rate_limit", 0.15)
         # A track is only published once it has been seen moving, which is what
         # keeps table legs and door frames out of `dets`. Close to the robot
         # that gate misfires: the two legs of a person standing half a metre
@@ -168,7 +174,15 @@ class DrSpaamNode(Node):
             require_motion=bool(self.get_parameter("track_require_motion").value),
             reseed_memory=float(self.get_parameter("track_reseed_memory").value),
             reseed_distance=float(self.get_parameter("track_reseed_distance").value),
+            motion_yaw_rate_limit=float(
+                self.get_parameter("track_motion_yaw_rate_limit").value
+            ),
         )
+
+        # Previous tracking-frame yaw, for the robot's own rotation rate. The
+        # tracker needs it to tell a person walking from a detection that only
+        # appears to move because the robot turned under it.
+        self.last_tracking_yaw = None
 
         # Inference scheduling / perf bookkeeping
         self.last_inference_time = None
@@ -408,7 +422,11 @@ class DrSpaamNode(Node):
             self._log_perf(now)
             return
         tracked_xy = self._to_scan(
-            self.tracker.update(self._to_tracking(dets_xy, tracking_pose), inference_dt),
+            self.tracker.update(
+                self._to_tracking(dets_xy, tracking_pose),
+                inference_dt,
+                self._tracking_yaw_rate(tracking_pose[2], inference_dt),
+            ),
             tracking_pose,
         )
 
@@ -457,6 +475,24 @@ class DrSpaamNode(Node):
         q = t.rotation
         yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
         return t.translation.x, t.translation.y, yaw
+
+    def _tracking_yaw_rate(self, yaw, dt):
+        """
+        Return the robot's own yaw rate [rad/s] since the last inference.
+
+        Differentiated from the scan frame's pose in the tracking frame, which
+        is looked up for the tracker anyway, so this costs no extra TF work.
+        The first inference has nothing to difference against and reports 0.0,
+        which is the permissive answer: one cycle of the old behaviour at
+        start-up cannot confirm a track on its own, because `min_hits` has not
+        been met yet either.
+        """
+        previous = self.last_tracking_yaw
+        self.last_tracking_yaw = yaw
+        if previous is None or dt <= 0.0:
+            return 0.0
+        delta = math.atan2(math.sin(yaw - previous), math.cos(yaw - previous))
+        return delta / dt
 
     @staticmethod
     def _to_tracking(dets_xy, pose):
