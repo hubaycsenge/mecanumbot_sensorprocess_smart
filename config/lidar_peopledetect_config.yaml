@@ -204,6 +204,16 @@ mecanumbot_cam_detect_people_ds:
       # Logs every rejected box with the check it failed. Verbose; for tuning.
       log_rejections: false
 
+    # A face in the bottom band of the frame, from any box, accepted or not, is
+    # published on cam_people_detections/low_head as its bearing. The trees tilt
+    # the head down on it while they search: somebody sitting low shows only
+    # their face to a camera tilted up, and the gate wants a torso.
+    low_head_cue:
+      enabled: true
+      keypoint_conf: 0.5
+      bottom_fraction: 0.2
+      min_face_keypoints: 2
+
 # Fuses the camera bearings with the LiDAR ranges and publishes `people_fusion`,
 # which is the single interface the behaviour layer consumes. The node had no
 # section here before, so everything below used to be a hard-coded default.

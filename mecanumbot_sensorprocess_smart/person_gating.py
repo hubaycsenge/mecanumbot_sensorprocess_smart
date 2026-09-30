@@ -47,6 +47,7 @@ research decision unit-testable on a development machine, where neither
 ``pyds`` nor the Jetson camera exists.
 """
 
+import math
 from dataclasses import dataclass
 
 # COCO-17 keypoint indices, as emitted by YOLO-pose / DeepStream-Yolo-Pose.
@@ -257,6 +258,57 @@ def evaluate_evidence(
         box_top=float(box_top),
         image_height=float(image_height),
     )
+
+
+FACE_KEYPOINTS = (NOSE, LEFT_EYE, RIGHT_EYE, LEFT_EAR, RIGHT_EAR)
+
+
+def head_at_bottom(
+    keypoints, image_height, keypoint_conf=0.5, bottom_fraction=0.2, min_face=2
+):
+    """
+    Return the image x of a head sitting in the bottom band of the frame, or None.
+
+    This is not a detection and the gate does not see it. It is a cue to the
+    behaviour layer that somebody low down -- sitting, on a bean bag -- is at
+    the edge of a camera that is tilted up to search: their face is in shot and
+    the rest of them is below it, so the gate, which wants a torso, has little
+    to go on until the head tilts down (2026-09-30, the 08:46 run: the face
+    keypoints were at 0.85-0.99 while the box was turned down at 0.55).
+
+    At least `min_face` of the nose, eyes and ears have to be found with
+    `keypoint_conf`, and their mean y has to lie in the bottom `bottom_fraction`
+    of the frame. Joints the model did not find are NaN (DeepStream) or (0, 0)
+    (Ultralytics); neither counts.
+
+    Args:
+        keypoints: sequence of 17 ``(confidence, x, y)`` tuples, in pixels.
+        image_height: frame height in pixels.
+        keypoint_conf: how sure the model has to be of a face joint.
+        bottom_fraction: the band, as a fraction of the frame height.
+        min_face: how many face joints have to be in it.
+
+    Returns:
+        The mean x of the face joints in pixels, or None.
+    """
+    if image_height <= 0.0:
+        return None
+    xs, ys = [], []
+    for index in FACE_KEYPOINTS:
+        if index >= len(keypoints):
+            continue
+        confidence, x, y = (float(v) for v in keypoints[index])
+        if confidence < keypoint_conf or not (math.isfinite(x) and math.isfinite(y)):
+            continue
+        if x == 0.0 and y == 0.0:
+            continue
+        xs.append(x)
+        ys.append(y)
+    if len(xs) < min_face:
+        return None
+    if sum(ys) / len(ys) < (1.0 - bottom_fraction) * image_height:
+        return None
+    return sum(xs) / len(xs)
 
 
 def is_close_range(evidence, cfg):

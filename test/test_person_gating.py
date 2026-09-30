@@ -24,6 +24,7 @@ from mecanumbot_sensorprocess_smart.person_gating import (
     RIGHT_SHOULDER,
     check_evidence,
     evaluate_evidence,
+    head_at_bottom,
     iou,
     is_close_range,
 )
@@ -427,3 +428,40 @@ class TestConfirmer:
         confirmer.update([self.person()], 0.0)
         confirmer.update([self.person()], 0.1)
         assert confirmer.update([self.prop()], 0.2)[0][0] is False
+
+
+# --- the look-down cue -----------------------------------------------------
+
+H = 720.0
+
+
+def _face(y, conf=0.95, x=640.0, n=5):
+    """Return 17 keypoints with `n` face joints at height `y`, the rest missing."""
+    missing = (0.0, float("nan"), float("nan"))
+    return [(conf, x + 10.0 * i, y) if i < n else missing for i in range(17)]
+
+
+def test_face_at_the_bottom_edge_is_a_cue():
+    """The bean bag of 2026-09-30: a face at the bottom, nothing below it."""
+    assert head_at_bottom(_face(690.0), H) == pytest.approx(660.0)
+
+
+def test_face_in_the_middle_is_not():
+    assert head_at_bottom(_face(300.0), H) is None
+
+
+def test_one_face_joint_is_not_enough():
+    assert head_at_bottom(_face(690.0, n=1), H) is None
+
+
+def test_unsure_face_joints_do_not_count():
+    assert head_at_bottom(_face(690.0, conf=0.3), H) is None
+
+
+def test_missing_joints_as_zeros_do_not_count():
+    keypoints = [(0.9, 0.0, 0.0)] * 17
+    assert head_at_bottom(keypoints, H) is None
+
+
+def test_no_frame_height_no_cue():
+    assert head_at_bottom(_face(690.0), 0.0) is None

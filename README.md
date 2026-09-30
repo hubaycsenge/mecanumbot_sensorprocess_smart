@@ -394,6 +394,7 @@ ROS node name: `mecanumbot_cam_detect_people_ds`.
 | ---------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `cam_people_detections`                        | `mecanumbot_msgs/msg/CamPersonDetectionArray` | Publishes pose-based people detections from the DeepStream pipeline.                                  |
 | `cam_people_detections/debug_image/compressed` | `sensor_msgs/msg/CompressedImage`             | Annotated debug image (boxes, skeleton, per-keypoint confidences), only when `debug_mode` is enabled. |
+| `cam_people_detections/low_head`               | `std_msgs/msg/Float32`                        | Bearing [rad, positive left] of a face in the bottom `low_head_cue.bottom_fraction` of the frame, from any box whether the gate accepted it or not (`person_gating.head_at_bottom`). Only on frames that have one; the trees tilt the head down on it. |
 | `/humans/bodies/tracked`                       | `hri_msgs/msg/IdsList`                        | ROS4HRI: IDs of the bodies currently being tracked. Republished whenever the set changes.             |
 | `/humans/bodies/<id>/skeleton2d`               | `hri_msgs/msg/Skeleton2D`                     | ROS4HRI: 18-joint normalized skeleton, created and destroyed with the body.                           |
 | `/humans/bodies/<id>/roi`                      | `hri_msgs/msg/NormalizedRegionOfInterest2D`   | ROS4HRI: normalized bounding box, only when `ros4hri.publish_roi` is enabled.                         |
@@ -976,7 +977,10 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
   person's angular bounds — of those, the one nearest the middle of the wedge, which is
   the one the camera is actually looking at; if there is none, extrapolate from the raw
   scan using the 20th percentile of the valid ranges inside the bounds (so background
-  hits do not dominate); if that also fails, drop the detection.
+  hits do not dominate); if that also fails, drop the detection. The bounds are
+  signed bearings and the LD08 scan runs 0..2pi, so the beams are matched modulo a
+  full turn (`scan_wedge.py`); until 2026-09-30 every person to the right of the
+  camera axis found no beams and was dropped.
 - Validates the result against the static map: a pose landing on an occupied cell is
   ray-traced outward until free space is found (up to 4 m of wall thickness) and then
   offset by `obstacle_buffer_x`.

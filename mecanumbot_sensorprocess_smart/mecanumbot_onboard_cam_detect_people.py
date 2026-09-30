@@ -33,6 +33,7 @@ from mecanumbot_sensorprocess_smart.person_gating import (
     DetectionConfirmer,
     GateConfig,
     evaluate_evidence,
+    head_at_bottom,
     is_close_range,
 )
 
@@ -147,6 +148,11 @@ class DeepStreamPersonDetectNode(Node):
                 ("detection_gate.max_missed_time", 0.5),
                 ("detection_gate.iou_threshold", 0.3),
                 ("detection_gate.log_rejections", False),
+                # ---- a face in the bottom band of the frame (see head_at_bottom) --
+                ("low_head_cue.enabled", True),
+                ("low_head_cue.keypoint_conf", 0.5),
+                ("low_head_cue.bottom_fraction", 0.2),
+                ("low_head_cue.min_face_keypoints", 2),
             ],
         )
 
@@ -172,6 +178,17 @@ class DeepStreamPersonDetectNode(Node):
         # the box gates on purpose: it decides which joints are drawn and fed
         # into the angular bounds, never whether the object is a person.
         self.min_conf_threshold = self.gate_config.keypoint_conf
+
+        # A face at the bottom edge of the frame, from any candidate, accepted
+        # or not: the behaviours tilt the head down to look at it.
+        self.low_head_enabled = bool(self.get_parameter("low_head_cue.enabled").value)
+        self.low_head_conf = float(self.get_parameter("low_head_cue.keypoint_conf").value)
+        self.low_head_band = float(
+            self.get_parameter("low_head_cue.bottom_fraction").value
+        )
+        self.low_head_min_face = int(
+            self.get_parameter("low_head_cue.min_face_keypoints").value
+        )
 
         # Initialize GStreamer
         Gst.init(None)
@@ -308,6 +325,11 @@ class DeepStreamPersonDetectNode(Node):
         # Publishers
         self.people_pub = self.create_publisher(
             CamPersonDetectionArray, "cam_people_detections", 10
+        )
+        # Bearing [rad, positive left] of a face at the bottom of the frame;
+        # published only on the frames that have one.
+        self.low_head_pub = self.create_publisher(
+            Float, "cam_people_detections/low_head", 10
         )
 
         if self.debug_mode:
@@ -1241,6 +1263,42 @@ class DeepStreamPersonDetectNode(Node):
                     cv2.LINE_AA,
                 )
 
+    def _low_head_x(self, candidates):
+        """Return the image x of the lowest face in the bottom band, or None."""
+        if not self.low_head_enabled:
+            return None
+        found = None
+        for candidate in candidates:
+            x = head_at_bottom(
+                candidate["keypoints"],
+                self.camera_height,
+                keypoint_conf=self.low_head_conf,
+                bottom_fraction=self.low_head_band,
+                min_face=self.low_head_min_face,
+            )
+            if x is not None:
+                found = x
+        return found
+
+    def _draw_low_head(self, debug_img, x):
+        """Mark the look-down cue on the debug image, so a trial shows it."""
+        scale_x, scale_y = self._overlay_scale
+        px = int(x * scale_x)
+        bottom = int(self.camera_height * scale_y) - 4
+        cv2.arrowedLine(
+            debug_img, (px, bottom - 60), (px, bottom), (0, 165, 255), 3, tipLength=0.3
+        )
+        cv2.putText(
+            debug_img,
+            "look down",
+            (max(0, px - 50), bottom - 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 165, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
     def metadata_probe(self, pad, info, u_data):
         gst_buffer = info.get_buffer()
         if not gst_buffer:
@@ -1277,6 +1335,13 @@ class DeepStreamPersonDetectNode(Node):
             )
 
             hri_candidates = []
+            low_head_x = self._low_head_x(candidates)
+            if low_head_x is not None:
+                self.low_head_pub.publish(
+                    Float(data=float(self.cam_to_angle(low_head_x / self.camera_width)))
+                )
+                if self.debug_mode:
+                    self._draw_low_head(debug_img, low_head_x)
             for candidate, (accepted, reason) in zip(candidates, verdicts):
                 close_range = is_close_range(candidate["evidence"], self.gate_config)
                 if accepted:

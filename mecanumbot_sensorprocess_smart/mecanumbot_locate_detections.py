@@ -55,6 +55,7 @@ import numpy as np
 import copy
 
 from mecanumbot_sensorprocess_smart import ball_locating
+from mecanumbot_sensorprocess_smart.scan_wedge import wedge_ranges
 from mecanumbot_sensorprocess_smart.person_tracking import (
     CameraCoverage,
     PersonTracker,
@@ -592,26 +593,24 @@ class PersonLocateNode(Node):
         if self.scan_data is None:
             return None
 
-        ranges = np.array(self.scan_data.ranges)
-        ang_min_scan = self.scan_data.angle_min
-        ang_inc = self.scan_data.angle_increment
-
         # Order the person bounding angles correctly
         p_min = min(bound_angle_min, bound_angle_max)
         p_max = max(bound_angle_min, bound_angle_max)
 
-        # Calculate indices and clamp them to array bounds to prevent IndexError
-        idx_min = int((p_min - ang_min_scan) / ang_inc)
-        idx_max = int((p_max - ang_min_scan) / ang_inc)
-
-        idx_min = max(0, min(idx_min, len(ranges) - 1))
-        idx_max = max(0, min(idx_max, len(ranges) - 1))
-
-        if idx_min >= idx_max:
+        # The bearings are signed and the LD08 scan runs 0..2pi, so the beams
+        # are matched modulo a full turn -- see scan_wedge.py for what indexing
+        # them directly used to throw away.
+        slice_ranges = wedge_ranges(
+            self.scan_data.ranges,
+            self.scan_data.angle_min,
+            self.scan_data.angle_increment,
+            p_min,
+            p_max,
+        )
+        if slice_ranges.size == 0:
             return None
 
-        # Extract distances and filter out inf, nan, and out-of-range limits
-        slice_ranges = ranges[idx_min : idx_max + 1]
+        # Filter out inf, nan, and out-of-range limits
         valid_mask = (
             (slice_ranges > self.scan_data.range_min)
             & (slice_ranges < self.scan_data.range_max)
