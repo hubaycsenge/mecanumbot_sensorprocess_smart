@@ -21,7 +21,7 @@ dependency cycle. Depending on the perception package instead does not.
 ## The three things it starts
 
 * `mecanumbot_lidar_detect_people` -- DR-SPAAM on the scan, publishing
-  `dr_spaam/dets` and `subject_pose`.
+  `dets` and `subject_pose`.
 * one camera detector, chosen by `detector`:
   - `pose` -- `mecanumbot_onboard_cam_detect_people`, skeletons on
     `cam_people_detections`. What the leading and ostensive experiments need.

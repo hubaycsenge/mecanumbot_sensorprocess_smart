@@ -1,10 +1,25 @@
-mecanumbot_lidar_detect_people:
+# Parameters of the perception nodes.
+#
+# EVERY top-level key starts with `/**/`, and has to. A bare `node_name:` only
+# matches a node in the root namespace, and these nodes run in `mecanumbot`, so
+# until 2026-10-02 nothing in this file reached any of them: each one started
+# on the defaults written into its own source, and every number tuned here was
+# a number nobody was using. (`ros2 param get /mecanumbot/<node> <param>` is
+# how to check what a node is really running on.) `/**/` matches the node in
+# whatever namespace it is started in; test/test_config_keys.py holds the line.
+
+/**/mecanumbot_lidar_detect_people:
   ros__parameters:
     weight_file: dr_spaam_5_on_frog.pth
     conf_thresh: 0.45
     scan_topic: /mecanumbot/scan
-    detections_topic: dr_spaam/dets
-    rviz_topic: dr_spaam/marker
+    # `dets`, which is what the node has in fact always published on: the
+    # fusion node subscribes to it, the trees wait for it before their first
+    # tick, and rviz and the metric logger read it. This line said
+    # `dr_spaam/dets` for as long as the file was not being loaded; loading it
+    # with that value would have cut the fusion off from the LiDAR detector.
+    detections_topic: dets
+    rviz_topic: dets_marker
 
     # ---- GPU load control (Jetson Orin Nano) ----
     # stride subsamples the cutout centres fed to the network: 2 halves the
@@ -78,7 +93,7 @@ mecanumbot_lidar_detect_people:
     # published) and furniture it drives past looks like people walking.
     tracking_frame: mecanumbot/odom
 
-mecanumbot_cam_detect_people_ds:
+/**/mecanumbot_cam_detect_people_ds:
   ros__parameters:
     # ---- ROS4HRI (REP-155) output, alongside the mecanumbot-native messages ----
     ros4hri:
@@ -217,7 +232,7 @@ mecanumbot_cam_detect_people_ds:
 # Fuses the camera bearings with the LiDAR ranges and publishes `people_fusion`,
 # which is the single interface the behaviour layer consumes. The node had no
 # section here before, so everything below used to be a hard-coded default.
-mecanumbot_locate_detections:
+/**/mecanumbot_locate_detections:
   ros__parameters:
     # Metres to place a detection behind a mapped wall it appears to be inside.
     obstacle_buffer_x: 0.5
@@ -228,6 +243,82 @@ mecanumbot_locate_detections:
     # and a stale wedge would keep placing them wherever the scan hits inside
     # it. Keep it at a few camera frames.
     cam_detection_timeout: 0.6
+    # The same for the LiDAR people detector's last `dets` message. The fusion
+    # runs on every scan now rather than on that message, so a DR-SPAAM node
+    # that has stopped must not leave its last people standing in the room.
+    dets_timeout: 0.5
+
+    # ---- where the camera points, in the LiDAR's terms ----
+    # MEASURED 2026-10-02 from the bags of 2026-09-23 .. 09-30. With the robot
+    # standing still, the legs the LiDAR sees sit 7.5 deg CLOCKWISE of the
+    # bearing the camera gives the same person: 266 detections over five bags,
+    # per-bag medians -5.8 .. -10.2 deg, larger close in (a few cm of sideways
+    # offset as well as a yaw). At 2 m that is 26 cm, the whole width of a pair
+    # of legs, so half the time they lay outside the wedge meant to range them.
+    # Added to every camera bearing before it is looked up in the scan.
+    # Positions are taken in the LiDAR's frame -- the one AMCL localises -- so
+    # which sensor is mounted askew does not matter to this node, but it does
+    # to anything else that trusts the camera's bearings. Re-measure if either
+    # sensor is remounted; 0.0 switches it off.
+    camera_bearing_offset_deg: -7.5
+    # Degrees a wedge is widened by on each side when matched against the
+    # scan. Covers the spread of the offset above (about 2.5 deg) and the
+    # camera frame being a few hundred ms older than the scan, which on a
+    # robot turning at 0.3 rad/s is several degrees more.
+    wedge_margin_deg: 4.0
+
+    # ---- scan clusters (see scan_clusters.py) ----
+    # The scan is cut into surfaces -- runs of neighbouring returns at about
+    # the same range -- and a camera bearing is ranged by the cluster it points
+    # at rather than by a percentile over the beams in its wedge. With ~210
+    # beams a turn a person's legs at 2 m are two beams out of seven; the 20th
+    # percentile of those was the wall behind them, or a range between the two
+    # at which there is nothing.
+    clusters:
+      enabled: true
+      # Metres two neighbouring returns may differ by and still be one surface,
+      # and how many dropped beams between them are bridged.
+      jump: 0.2
+      max_gap: 1
+      # A CANDIDATE is a cluster the size of a person that the static map does
+      # not explain. Candidates are published on lidar_candidates (map frame,
+      # one message per scan, empty when there are none) -- the leading tree
+      # points the head at them -- and they keep an existing track alive.
+      # A leg is ~0.12 m across; a person on a bean bag about a metre.
+      min_width: 0.10
+      max_width: 1.2
+      # Beyond this a leg is one beam or none.
+      max_range: 4.5
+      # Metres the map's obstacles are grown by before a return is called
+      # "the room", and the share of a cluster's returns that have to be.
+      map_inflation: 0.2
+      max_explained: 0.5
+      # Candidates may sustain a track the camera started; they never start
+      # one. This is what tracks a person once found: DR-SPAAM reports almost
+      # nothing on this LiDAR (45 non-empty dets messages in 5502 on
+      # 2026-09-30), so a track used to live exactly as long as the camera held
+      # it. sustain_gate is how near a track's prediction a candidate must be
+      # [m] -- tighter than tracking.max_association_distance on purpose: a
+      # cluster is a precise position, and a track given 0.9 m to choose from
+      # takes a chair leg. Still bounded by max_uncorroborated_time in front of
+      # the camera and max_blind_zone_time out of its view.
+      sustain_tracks: true
+      sustain_gate: 0.45
+      candidates_topic: lidar_candidates
+
+    # ---- a detection ranged onto mapped structure ----
+    # With no candidate in the wedge the camera is looking at somebody who is
+    # behind something on the map (it sees over the blue panels, the LiDAR does
+    # not see through them) or against it (a chair by the wall).
+    # obstacle_buffer_x above is how far BEHIND they are put. But there has to
+    # be a behind: free, mapped floor within max_depth of the hit, and still
+    # free where the person would be put. Otherwise they are put
+    # front_standoff in FRONT of the hit. The old rule walked along the ray
+    # until the map was free again, which beyond an outer wall is never, and
+    # published a person sitting by the wall at (3.2, 3.0) -- off the map.
+    occlusion:
+      front_standoff: 0.3
+      max_depth: 0.6
 
     # ---- map-frame tracking (see person_tracking.py) ----
     # A constant-velocity Kalman estimate per person. It exists because the
@@ -266,6 +357,13 @@ mecanumbot_locate_detections:
       # m/s. Above this is an association error, not a person, so the reported
       # velocity is clamped rather than believed.
       max_reported_speed: 2.5
+      # Seconds over which a track that is only being predicted loses its
+      # velocity, so it drifts by about speed x this and then waits. The
+      # velocity is the least certain thing the filter knows -- two fixes 0.1 s
+      # and 0.3 m of range noise apart are "3 m/s" -- and coasting on it for
+      # all of max_coast_time marched a track three metres across the room and
+      # through the wall (2026-09-30). 0.0 keeps the velocity, as before.
+      coast_velocity_time: 0.4
 
       # ---- the camera's blind zone ----
       # Requiring the camera to agree only makes sense where the camera could
@@ -467,7 +565,7 @@ mecanumbot_locate_detections:
 # second class, which is the only way a tennis ball is ever detected. Both
 # detectors feed the same `mecanumbot_locate_detections`, which accepts person
 # evidence in either form, so `people_fusion` keeps flowing whichever is up.
-mecanumbot_cam_detect_objects_ds:
+/**/mecanumbot_cam_detect_objects_ds:
   ros__parameters:
     # ---- the detection model ----
     # Same folder-per-input-size layout as the pose model: imgsz picks

@@ -81,10 +81,15 @@ unit-testable on a development machine.
 
 import math
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 from filterpy.kalman import KalmanFilter
 from scipy.optimize import linear_sum_assignment
+
+
+# A cost no assignment would choose while a real pairing is available.
+_UNMATCHABLE = 1.0e6
 
 
 @dataclass(frozen=True)
@@ -94,11 +99,25 @@ class Measurement:
     `corroborated` is whether the camera agreed a person is at this point.
     Uncorroborated measurements (a bare LiDAR detection) may update a track
     that already exists but may never start one.
+
+    `creates` is whether an uncorroborated measurement may start a track where
+    the rules otherwise allow it, which is the blind zone. A DR-SPAAM detection
+    may: the network at least judged it to be legs. A bare scan cluster may
+    not. It is only something person-sized that the map does not explain, and
+    a room has a dozen of those; it exists to carry a person the camera already
+    found across the stretch where the camera cannot see them.
+
+    `gate` tightens the association distance for this one measurement, or is
+    None for the tracker's own. A cluster is a precise position, so it gets a
+    tight one: the looser gate exists for the range noise of a camera wedge,
+    and a track handed half the room to choose from will take a chair leg.
     """
 
     x: float
     y: float
     corroborated: bool = True
+    creates: bool = True
+    gate: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +234,18 @@ class TrackerConfig:
     # subject is sprinting because two people swapped tracks for a frame.
     max_reported_speed: float = 2.5
 
+    # Seconds over which a track that is only being predicted loses its
+    # velocity. Coasting carries a person across a dropped frame, and for that
+    # the velocity is worth having for a moment; but it is the least certain
+    # thing the filter knows -- two fixes a tenth of a second and 0.3 m of
+    # range noise apart are "3 m/s" -- and a track coasting on it for the whole
+    # `max_coast_time` was published marching across the room and out through
+    # the wall, three metres from where anybody had been seen (2026-09-30,
+    # 09:02 bag, twice within six seconds). With the velocity decaying on this
+    # time constant a coasting track drifts by about `speed * this` in all and
+    # then waits where it is. 0.0 keeps the velocity, as before.
+    coast_velocity_time: float = 0.4
+
 
 class PersonTrack:
     """One person, as a constant-velocity estimate of where they are."""
@@ -317,6 +348,14 @@ class PersonTrack:
         advanced - the camera is not disagreeing, it is absent - and the time
         spent that way is charged to `max_blind_zone_time` instead.
         """
+        # Already coasting when this step began: the last one brought no
+        # measurement either, so what is left of the velocity is a guess that
+        # is getting older.
+        decay = self._cfg.coast_velocity_time
+        if self.time_since_update > 0.0 and decay > 0.0:
+            fade = math.exp(-dt / decay)
+            self.kf.x[2, 0] *= fade
+            self.kf.x[3, 0] *= fade
         self.kf.F[0, 2] = dt
         self.kf.F[1, 3] = dt
         self.kf.predict()
@@ -397,12 +436,29 @@ class PersonTracker:
 
         points = np.array([[m.x, m.y] for m in measurements], dtype=float)
         cost = np.linalg.norm(predictions[:, None, :] - points[None, :, :], axis=2)
-        track_indices, measurement_indices = linear_sum_assignment(cost)
+        # A pairing outside its gate is not a pairing, and it must not be left
+        # in the assignment at its real cost: the solver minimises the total,
+        # so it would happily give a track a far cluster in exchange for a
+        # slightly better match elsewhere, and the gate would then throw the
+        # pair away and leave that track with nothing.
+        gates = np.array(
+            [
+                self._cfg.max_association_distance
+                if m.gate is None
+                else min(self._cfg.max_association_distance, m.gate)
+                for m in measurements
+            ],
+            dtype=float,
+        )
+        blocked = cost > gates[None, :]
+        track_indices, measurement_indices = linear_sum_assignment(
+            np.where(blocked, _UNMATCHABLE, cost)
+        )
 
         matches = []
         matched_measurements = set()
         for track_index, measurement_index in zip(track_indices, measurement_indices):
-            if cost[track_index, measurement_index] <= self._cfg.max_association_distance:
+            if not blocked[track_index, measurement_index]:
                 matches.append((track_index, measurement_index))
                 matched_measurements.add(measurement_index)
         unmatched = [
@@ -461,7 +517,8 @@ class PersonTracker:
             # to see anyone standing close. Such a track still has to earn
             # `blind_zone_min_hits` before it is published.
             if not measurement.corroborated and not (
-                self._cfg.blind_zone_creates_tracks
+                measurement.creates
+                and self._cfg.blind_zone_creates_tracks
                 and self._is_blind(camera, (measurement.x, measurement.y))
             ):
                 continue
@@ -490,7 +547,13 @@ class PersonTracker:
         self._last_step = None
 
 
-def combine_measurements(camera_points, lidar_points, min_separation):
+def combine_measurements(
+    camera_points,
+    lidar_points,
+    min_separation,
+    cluster_points=(),
+    cluster_gate=None,
+):
     """Merge camera-corroborated and LiDAR-only points into one measurement set.
 
     Both sensors see the same people, so a person standing in front of the
@@ -504,6 +567,14 @@ def combine_measurements(camera_points, lidar_points, min_separation):
     the camera has lost. Those are marked uncorroborated, which lets them keep
     an existing track alive without being able to start one.
 
+    `cluster_points` are the third kind: scan clusters the size of a person
+    that the map does not explain (`scan_clusters.candidates`). They are the
+    LiDAR's own account of where things are standing, and they are what keeps a
+    person tracked once found -- DR-SPAAM reports almost nothing on this sensor,
+    so without them a track lived exactly as long as the camera held it. They
+    may sustain a track and never start one, and one that coincides with a
+    measurement of either other kind is that same person and is dropped.
+
     Args:
         camera_points: ``(x, y)`` map-frame points the camera vouches for.
         lidar_points: ``(x, y)`` map-frame points from the LiDAR alone.
@@ -511,6 +582,10 @@ def combine_measurements(camera_points, lidar_points, min_separation):
             same person as a camera one. The tracker's association distance is
             the right value: closer than that and the tracker could not have
             told them apart anyway.
+        cluster_points: ``(x, y)`` map-frame points of the scan's candidates.
+        cluster_gate: the association gate those are held to, in metres, and
+            the distance inside which one is a duplicate; None for the
+            tracker's own.
 
     Returns:
         A list of :class:`Measurement`.
@@ -526,4 +601,15 @@ def combine_measurements(camera_points, lidar_points, min_separation):
         ):
             continue
         measurements.append(Measurement(x, y, False))
+
+    duplicate = min_separation if cluster_gate is None else cluster_gate
+    placed = list(measurements)
+    for x, y in cluster_points:
+        x = float(x)
+        y = float(y)
+        if any(np.hypot(x - m.x, y - m.y) <= duplicate for m in placed):
+            continue
+        measurements.append(
+            Measurement(x, y, False, creates=False, gate=cluster_gate)
+        )
     return measurements

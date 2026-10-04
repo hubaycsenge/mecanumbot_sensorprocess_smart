@@ -9,6 +9,14 @@ direction, the LiDAR says how far, and a Kalman estimate per person carries the
 result across the frames where one of the two is missing. That is the original
 job of this node and `person_tracking.py` explains it.
 
+The LiDAR's half of that is done on **clusters** -- the surfaces the scan saw,
+`scan_clusters.py` -- rather than on the raw beams inside a bearing wedge. A
+camera bearing is ranged by the cluster it points at; the clusters the size of
+a person that the map does not explain keep a person tracked where the camera
+cannot follow them; and those same clusters go out on `lidar_candidates`, which
+is what the trees point the head at. The fusion runs on every scan, so it no
+longer stops when the DR-SPAAM node does.
+
 **Balls** are the fetch game's target, and the LiDAR cannot help at all: it scans
 one horizontal plane about 0.12 m up and a tennis ball on the floor is never in
 it, so a range looked up inside the ball's bearing would be the range of the
@@ -55,6 +63,7 @@ import numpy as np
 import copy
 
 from mecanumbot_sensorprocess_smart import ball_locating
+from mecanumbot_sensorprocess_smart import scan_clusters
 from mecanumbot_sensorprocess_smart.scan_wedge import wedge_ranges
 from mecanumbot_sensorprocess_smart.person_tracking import (
     CameraCoverage,
@@ -84,6 +93,49 @@ class PersonLocateNode(Node):
         # left was still being placed wherever the scan happened to hit inside
         # a bearing wedge measured minutes earlier.
         self.declare_parameter("cam_detection_timeout", 0.6)
+        # The same question of the LiDAR people detector's last message. The
+        # fusion used to run *on* that message, so it was never stale; it now
+        # runs on the scan, and a DR-SPAAM node that has died must not leave
+        # its last detections standing in the room.
+        self.declare_parameter("dets_timeout", 0.5)
+        # ---- where the camera points, in the LiDAR's terms ----
+        # MEASURED 2026-10-02 from the bags of 2026-09-23 .. 09-30: with the
+        # robot standing still, the legs the LiDAR sees sit 7.5 deg clockwise
+        # of the bearing the camera gives the same person (266 detections, five
+        # bags, per-bag medians -5.8 .. -10.2). Added to every camera bearing
+        # before it is looked up in the scan. Which of the two sensors is the
+        # one mounted askew does not matter here -- positions are taken in the
+        # LiDAR's frame, which is the one AMCL localises -- but it is worth
+        # finding out on the robot, and re-measuring if either is remounted.
+        self.declare_parameter("camera_bearing_offset_deg", -7.5)
+        # Degrees a bearing wedge is widened by on each side when it is matched
+        # against the scan. The offset above is a median with a spread of about
+        # 2.5 deg, and the camera frame is a few hundred ms older than the scan,
+        # which on a robot turning at 0.3 rad/s is several degrees more.
+        self.declare_parameter("wedge_margin_deg", 4.0)
+        # ---- scan clusters (see scan_clusters.py) ----
+        self.declare_parameter("clusters.enabled", True)
+        # Metres two neighbouring returns may differ by and still be one surface.
+        self.declare_parameter("clusters.jump", 0.2)
+        self.declare_parameter("clusters.max_gap", 1)
+        # What makes a cluster a candidate: person-sized, in range, and not
+        # already explained by the static map grown by `map_inflation`.
+        self.declare_parameter("clusters.min_width", 0.10)
+        self.declare_parameter("clusters.max_width", 1.2)
+        self.declare_parameter("clusters.max_range", 4.5)
+        self.declare_parameter("clusters.map_inflation", 0.2)
+        self.declare_parameter("clusters.max_explained", 0.5)
+        # Whether candidates may keep an existing track alive, and how near its
+        # prediction one has to be. They never start one.
+        self.declare_parameter("clusters.sustain_tracks", True)
+        self.declare_parameter("clusters.sustain_gate", 0.45)
+        self.declare_parameter("clusters.candidates_topic", "lidar_candidates")
+        # ---- a detection ranged onto mapped structure ----
+        # `obstacle_buffer_x` above is how far behind an occluder the person is
+        # put. These two decide whether there *is* a behind: see
+        # scan_clusters.place_on_structure.
+        self.declare_parameter("occlusion.front_standoff", 0.3)
+        self.declare_parameter("occlusion.max_depth", 0.6)
         # --- map-frame tracking (see person_tracking.py) ---
         # The camera gate rejects real people -- a long skirt gives the pose
         # network no skeleton to find -- and every rejection used to empty
@@ -98,6 +150,7 @@ class PersonLocateNode(Node):
         self.declare_parameter("tracking.measurement_noise", 0.25)
         self.declare_parameter("tracking.process_noise", 0.08)
         self.declare_parameter("tracking.max_reported_speed", 2.5)
+        self.declare_parameter("tracking.coast_velocity_time", 0.4)
         # --- the camera's blind zone ---
         # Corroboration is only meaningful where the camera could have supplied
         # it. Close to the robot the vertical field of view has run out and off
@@ -201,6 +254,12 @@ class PersonLocateNode(Node):
         # Publishers
         self.people_pub = self.create_publisher(PoseArray, "people_fusion", 10)
         self.debug_mode = self.get_parameter("debug_mode").value
+        # What the LiDAR sees that might be a person: map-frame points, one per
+        # scan, EMPTY when there are none -- so a consumer can tell "nothing in
+        # the room" from "nobody is publishing", which `people_fusion` cannot.
+        self.candidates_pub = self.create_publisher(
+            PoseArray, str(self.get_parameter("clusters.candidates_topic").value), 10
+        )
 
         # The ball goes out twice, for two kinds of consumer. `ball_fusion`
         # mirrors `people_fusion` -- a PoseArray in the map frame, which is what
@@ -259,16 +318,54 @@ class PersonLocateNode(Node):
         # State variables
         self.laser_detections = []
         self.laser_angles = []
+        self.laser_received_time = None
         self.cam_detections = []
         self.scan_data = None
         self.map_data = None
         self.map_array = None
+        self.static_map = None
+
+        self.dets_timeout = float(self.get_parameter("dets_timeout").value)
+        self.camera_bearing_offset = math.radians(
+            float(self.get_parameter("camera_bearing_offset_deg").value)
+        )
+        self.wedge_margin = math.radians(
+            float(self.get_parameter("wedge_margin_deg").value)
+        )
+        self.clusters_enabled = bool(self.get_parameter("clusters.enabled").value)
+        self.cluster_jump = float(self.get_parameter("clusters.jump").value)
+        self.cluster_max_gap = int(self.get_parameter("clusters.max_gap").value)
+        self.map_inflation = float(self.get_parameter("clusters.map_inflation").value)
+        self.candidate_config = scan_clusters.CandidateConfig(
+            min_width=float(self.get_parameter("clusters.min_width").value),
+            max_width=float(self.get_parameter("clusters.max_width").value),
+            max_explained=float(self.get_parameter("clusters.max_explained").value),
+            max_range=float(self.get_parameter("clusters.max_range").value),
+        )
+        self.clusters_sustain = bool(
+            self.get_parameter("clusters.sustain_tracks").value
+        )
+        self.cluster_gate = float(self.get_parameter("clusters.sustain_gate").value)
+        self.occlusion_config = scan_clusters.OcclusionConfig(
+            behind_buffer=float(self.get_parameter("obstacle_buffer_x").value),
+            front_standoff=float(self.get_parameter("occlusion.front_standoff").value),
+            max_occluder_depth=float(self.get_parameter("occlusion.max_depth").value),
+        )
+        self.get_logger().info(
+            "People are ranged on scan clusters: camera bearings shifted "
+            f"{math.degrees(self.camera_bearing_offset):+.1f} deg into the LiDAR's "
+            f"frame, wedges widened by {math.degrees(self.wedge_margin):.1f} deg; "
+            f"candidates are {self.candidate_config.min_width:.2f}.."
+            f"{self.candidate_config.max_width:.2f} m wide within "
+            f"{self.candidate_config.max_range:.1f} m and "
+            f"{'sustain' if self.clusters_sustain else 'do not sustain'} tracks."
+        )
         self.amcl_pose = None
         self.last_published_time = None
         self.cam_stamp = None
         self.cam_received_time = None
         self.fused_poses = PoseArray()
-        # merge_detections() runs on the LiDAR callback and publish_tracks() on
+        # merge_detections() runs on the scan callback and publish_tracks() on
         # a timer; under the multi-threaded executor those are different
         # threads, so the handover between them is the one place that locks.
         self._measurement_lock = threading.Lock()
@@ -436,7 +533,22 @@ class PersonLocateNode(Node):
         return age <= self.cam_detection_timeout
 
     def scan_callback(self, msg):
+        """Keep the scan and run one round of fusion on it.
+
+        The fusion used to run on the DR-SPAAM node's `dets` message instead,
+        which made that node a single point of failure for a pipeline that
+        mostly does not use its output: with it down, a camera detection was
+        never ranged and `people_fusion` was silent.
+        """
         self.scan_data = msg
+        self.merge_detections()
+
+    def _lidar_people_are_fresh(self):
+        """Say whether the DR-SPAAM detections are recent enough to use."""
+        if self.laser_received_time is None:
+            return False
+        age = (self.get_clock().now() - self.laser_received_time).nanoseconds / 1e9
+        return age <= self.dets_timeout
 
     def amcl_callback(self, msg):
         self.amcl_pose = msg.pose.pose
@@ -446,6 +558,13 @@ class PersonLocateNode(Node):
         # Convert map 1D array to 2D numpy array for fast spatial lookups
         self.map_array = np.array(msg.data, dtype=np.int8).reshape(
             (msg.info.height, msg.info.width)
+        )
+        self.static_map = scan_clusters.StaticMap(
+            self.map_array,
+            msg.info.resolution,
+            msg.info.origin.position.x,
+            msg.info.origin.position.y,
+            inflation=self.map_inflation,
         )
 
     def fill_bound_angle(self, X_min, X_max):
@@ -556,7 +675,7 @@ class PersonLocateNode(Node):
             self.laser_detections.append(new_pose)
             self.laser_angles.append(math.atan2(global_y, global_x))
 
-        self.merge_detections()
+        self.laser_received_time = self.get_clock().now()
 
     def arrange_with_scan_dets(self, bound_angle_min, bound_angle_max):
         """
@@ -565,11 +684,14 @@ class PersonLocateNode(Node):
         Takes the two bounds rather than a message, because the wedge now comes
         from two places: a `CamPersonDetection` from the pose detector, which
         computed the angles itself, and a bounding box from the fetch detector,
-        whose angles are computed here.
+        whose angles are computed here. The bounds are in the LiDAR's frame:
+        the caller has already added `camera_bearing_offset`.
         """
+        if not self._lidar_people_are_fresh():
+            return None
         # Ensure correct min/max bounds even if wrapped
-        ang_min = min(bound_angle_min, bound_angle_max)
-        ang_max = max(bound_angle_min, bound_angle_max)
+        ang_min = min(bound_angle_min, bound_angle_max) - self.wedge_margin
+        ang_max = max(bound_angle_min, bound_angle_max) + self.wedge_margin
 
         # Of the LiDAR people inside the camera's bearing wedge, the one the
         # camera is actually looking at is the one nearest the middle of it.
@@ -589,7 +711,16 @@ class PersonLocateNode(Node):
         return best_pose
 
     def extrap_from_raw_scan(self, bound_angle_min, bound_angle_max):
-        """Take a range from the raw scan inside a bearing wedge, or None."""
+        """
+        Take a range from the raw scan inside a bearing wedge, or None.
+
+        The last resort, for a wedge with no DR-SPAAM person and no candidate
+        cluster in it: whatever the camera is looking at is on, against or
+        behind something the map already knows, and `handle_map_occlusion`
+        decides which. The range is an actual return near the front of the
+        wedge -- see `scan_clusters.structure_range` for what the percentile it
+        replaces used to make up.
+        """
         if self.scan_data is None:
             return None
 
@@ -617,105 +748,34 @@ class PersonLocateNode(Node):
             & ~np.isinf(slice_ranges)
             & ~np.isnan(slice_ranges)
         )
-        valid_ranges = slice_ranges[valid_mask]
-        # valid_ranges = np.round(valid_ranges, 1)  # Round to 3 decimal places for stability
-
-        if len(valid_ranges) == 0:
+        distance = scan_clusters.structure_range(slice_ranges[valid_mask])
+        if distance is None:
             return None
 
-        # Use median to ignore background laser hits
-        dist_median = float(
-            np.percentile(valid_ranges, 20)
-        )  # float(np.median(valid_ranges))
         center_angle = p_min + (p_max - p_min) / 2.0
-
-        x = dist_median * math.cos(center_angle)
-        y = dist_median * math.sin(center_angle)
-        # self.get_logger().info(f"Extrapolated detection at local coordinates: ({x:.2f}, {y:.2f})")
+        x = distance * math.cos(center_angle)
+        y = distance * math.sin(center_angle)
         return Pose(position=Point(x=x, y=y, z=0.0))
 
-    def handle_map_occlusion(self, local_pose):
-        """Checks if the proposed local point lands in a map obstacle and extrudes it."""
-        if self.map_data is None or self.map_array is None or self.amcl_pose is None:
-            return local_pose  # Missing data, return standard point safely
+    def handle_map_occlusion(self, local_pose, transform):
+        """
+        Place a base-frame point that may have ranged onto mapped structure.
 
-        local_x = local_pose.position.x
-        local_y = local_pose.position.y
-
-        # 1. Get Robot global pose in map
-        rx = self.amcl_pose.position.x
-        ry = self.amcl_pose.position.y
-        q = self.amcl_pose.orientation
-        ryaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
-
-        # 2. Transform hit location to global map frame
-        hit_x = rx + local_x * math.cos(ryaw) - local_y * math.sin(ryaw)
-        hit_y = ry + local_x * math.sin(ryaw) + local_y * math.cos(ryaw)
-
-        # 3. Convert to map grid coordinates
-        res = self.map_data.info.resolution
-        ox = self.map_data.info.origin.position.x
-        oy = self.map_data.info.origin.position.y
-        width = self.map_data.info.width
-        height = self.map_data.info.height
-
-        gx = int((hit_x - ox) / res)
-        gy = int((hit_y - oy) / res)
-
-        if not (0 <= gx < width and 0 <= gy < height):
-            self.get_logger().warn(
-                "Detection is out of map bounds, skipping occlusion check."
-            )
-            return local_pose  # Out of map bounds
-
-        if self.map_array[gy, gx] > 50:
-            # self.get_logger().info("Wall occlusion detected! Tracing back of wall...")
-
-            # Global ray angle from robot
-            ray_yaw = ryaw + math.atan2(local_y, local_x)
-            step_size = res / 2.0  # Sub-cell stepping to ensure we don't jump gaps
-
-            curr_dist = math.hypot(local_x, local_y)  # Distance from robot to wall hit
-            max_dist = (
-                curr_dist + 4.0
-            )  # Limit tracing to prevent infinite loops (max 4m thick wall)
-
-            # Trace until free space is found
-            while curr_dist < max_dist:
-                curr_x_map = rx + curr_dist * math.cos(ray_yaw)
-                curr_y_map = ry + curr_dist * math.sin(ray_yaw)
-
-                cgx = int((curr_x_map - ox) / res)
-                cgy = int((curr_y_map - oy) / res)
-
-                if not (0 <= cgx < width and 0 <= cgy < height):
-                    break  # Ray left the map
-
-                cell_val = self.map_array[cgy, cgx]
-                if cell_val < 50 and cell_val != -1:
-                    # Found free space behind wall (ignoring unknown space (-1))
-                    break
-
-                curr_dist += step_size
-
-            # 5. Apply the +X offset from behind the wall
-            x_offset = self.get_parameter("obstacle_buffer_x").value
-            final_dist = curr_dist + x_offset
-
-            # 6. Re-calculate returning pose in robot's local base_link frame
-            local_angle = math.atan2(local_y, local_x)
-            corrected_pose = Pose()
-            corrected_pose.position.x = final_dist * math.cos(local_angle)
-            corrected_pose.position.y = final_dist * math.sin(local_angle)
-            corrected_pose.position.z = 0.0
-
-            self.get_logger().info(
-                f"Corrected pose shifted +{x_offset}m behind obstacle to "
-                f"({corrected_pose.position.x:.2f}, {corrected_pose.position.y:.2f})"
-            )
-            return corrected_pose
-        # self.get_logger().info("No wall occlusion detected, keeping original pose.")
-        return local_pose
+        Returns the map-frame ``(x, y)``. A point on free floor is simply
+        transformed; one on a wall or a partition is put behind it or in front
+        of it, whichever the map says is possible -- see
+        `scan_clusters.place_on_structure`, which replaced a walk along the ray
+        that did not stop at the edge of the mapped room.
+        """
+        mapped = do_transform_pose(local_pose, transform)
+        hit = (mapped.position.x, mapped.position.y)
+        robot = (
+            transform.transform.translation.x,
+            transform.transform.translation.y,
+        )
+        return scan_clusters.place_on_structure(
+            self.static_map, robot, hit, self.occlusion_config
+        )
 
     def _build_tracker_config(self):
         """Assemble the map-frame tracker settings from the ROS parameters."""
@@ -734,6 +794,7 @@ class PersonLocateNode(Node):
             measurement_noise=float(track("measurement_noise")),
             process_noise=float(track("process_noise")),
             max_reported_speed=float(track("max_reported_speed")),
+            coast_velocity_time=float(track("coast_velocity_time")),
         )
 
     def _camera_coverage(self):
@@ -762,10 +823,12 @@ class PersonLocateNode(Node):
         yaw = math.atan2(
             2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         )
+        # The camera's axis in the frame the tracks are placed in, which is the
+        # LiDAR's: the same offset the bearings get.
         return CameraCoverage(
             x=translation.x,
             y=translation.y,
-            yaw=yaw,
+            yaw=yaw + self.camera_bearing_offset,
             blind_range=self.camera_blind_range,
             half_fov=self.camera_half_fov,
             exempt_close_range=self.exempt_close_range,
@@ -784,26 +847,89 @@ class PersonLocateNode(Node):
             )
             return None
 
-    def _locate_from_bearing(self, ang_min, ang_max):
+    @staticmethod
+    def _planar_pose(transform):
+        """Return a transform as the planar pose ``(x, y, yaw)``."""
+        q = transform.transform.rotation
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        )
+        return (
+            transform.transform.translation.x,
+            transform.transform.translation.y,
+            yaw,
+        )
+
+    def _scan_candidates(self, pose):
         """
-        Place a camera bearing wedge in the base_link frame, or return None.
+        Return the scan's person-sized clusters the static map does not explain.
+
+        In the scan's frame, which this node has always treated as the base
+        frame: `base_scan` sits straight above `base_link`, unrotated. `pose`
+        is that frame in the map, and is only used to ask the map about them.
+        """
+        scan = self.scan_data
+        if not self.clusters_enabled or scan is None:
+            return []
+        clusters = scan_clusters.segment_scan(
+            scan.ranges,
+            scan.angle_min,
+            scan.angle_increment,
+            range_min=scan.range_min,
+            range_max=scan.range_max,
+            max_range=self.candidate_config.max_range,
+            jump=self.cluster_jump,
+            max_gap=self.cluster_max_gap,
+        )
+        return scan_clusters.candidates(
+            clusters, pose, self.static_map, self.candidate_config
+        )
+
+    def _publish_candidates(self, candidates, pose, stamp):
+        """Publish where the LiDAR sees something that might be a person."""
+        message = PoseArray()
+        message.header.stamp = stamp
+        message.header.frame_id = "map"
+        if candidates:
+            xs, ys = scan_clusters.to_map([(c.x, c.y) for c in candidates], pose)
+            for x, y in zip(xs.tolist(), ys.tolist()):
+                message.poses.append(Pose(position=Point(x=x, y=y, z=0.0)))
+        self.candidates_pub.publish(message)
+        return [(p.position.x, p.position.y) for p in message.poses]
+
+    def _locate_from_bearing(self, ang_min, ang_max, candidates, transform):
+        """
+        Place a camera bearing wedge in the map, or return None.
 
         The camera gives a bearing and no range, so the range is looked up in
-        whatever the LiDAR has inside that bearing: a DR-SPAAM person first,
-        the raw scan second.
+        whatever the LiDAR has in that direction, best evidence first: a
+        DR-SPAAM person, then the candidate cluster the wedge points at, and
+        only then the bare scan -- which by that point can only be the room
+        itself, so the result is placed against or behind it.
+
+        The bounds are the camera's own; `camera_bearing_offset` brings them
+        into the LiDAR's frame here, once, for all three.
         """
-        person_pose = self.arrange_with_scan_dets(ang_min, ang_max)
-        if person_pose is None:
-            person_pose = self.extrap_from_raw_scan(ang_min, ang_max)
+        low = min(ang_min, ang_max) + self.camera_bearing_offset
+        high = max(ang_min, ang_max) + self.camera_bearing_offset
+
+        person_pose = self.arrange_with_scan_dets(low, high)
+        if person_pose is not None:
+            return self.handle_map_occlusion(person_pose, transform)
+
+        cluster = scan_clusters.choose_for_wedge(
+            candidates, low, high, self.wedge_margin
+        )
+        if cluster is not None:
+            mapped = do_transform_pose(
+                Pose(position=Point(x=cluster.x, y=cluster.y, z=0.0)), transform
+            )
+            return mapped.position.x, mapped.position.y
+
+        person_pose = self.extrap_from_raw_scan(low, high)
         if person_pose is None:
             return None
-        return self.handle_map_occlusion(person_pose)
-
-    def _locate_camera_person(self, person):
-        """Place one `CamPersonDetection` in the base_link frame, or None."""
-        return self._locate_from_bearing(
-            person.bound_angle_min.data, person.bound_angle_max.data
-        )
+        return self.handle_map_occlusion(person_pose, transform)
 
     def _camera_wedges(self):
         """
@@ -838,24 +964,30 @@ class PersonLocateNode(Node):
     def merge_detections(self):
         """Turn this round's detections into map-frame measurements.
 
-        Called from the LiDAR callback, which is the faster of the two inputs.
-        Nothing is published here: with tracking on, the measurements are left
-        for :meth:`publish_tracks` to fold in on its timer, so `people_fusion`
-        runs at a steady rate whether or not a detection arrived. Publishing
-        on arrival is what used to make a rejected camera frame look exactly
-        like an empty room.
+        Called from the scan callback, which is the faster of the two inputs.
+        `people_fusion` is not published here: with tracking on, the
+        measurements are left for :meth:`publish_tracks` to fold in on its
+        timer, so it runs at a steady rate whether or not a detection arrived.
+        Publishing on arrival is what used to make a rejected camera frame look
+        exactly like an empty room. `lidar_candidates` *is* published here,
+        once per scan.
         """
         transform = self._map_transform()
         if transform is None:
             return
         self.trans = transform
+        pose = self._planar_pose(transform)
+
+        candidates = self._scan_candidates(pose)
+        cluster_points = self._publish_candidates(
+            candidates, pose, self.get_clock().now().to_msg()
+        )
 
         camera_points = []
         for ang_min, ang_max in self._camera_wedges():
-            person_pose = self._locate_from_bearing(ang_min, ang_max)
-            if person_pose is not None:
-                mapped = do_transform_pose(person_pose, transform)
-                camera_points.append((mapped.position.x, mapped.position.y))
+            placed = self._locate_from_bearing(ang_min, ang_max, candidates, transform)
+            if placed is not None:
+                camera_points.append(placed)
             if self.debug_mode:
                 self.fill_bound_angle(ang_min, ang_max)
 
@@ -869,14 +1001,17 @@ class PersonLocateNode(Node):
         # cannot skeletonise - but never start one, because a leg-sized return
         # on its own is not evidence of a person.
         lidar_points = []
-        for pose in self.laser_detections:
-            mapped = do_transform_pose(pose, transform)
-            lidar_points.append((mapped.position.x, mapped.position.y))
+        if self._lidar_people_are_fresh():
+            for laser_pose in self.laser_detections:
+                mapped = do_transform_pose(laser_pose, transform)
+                lidar_points.append((mapped.position.x, mapped.position.y))
 
         measurements = combine_measurements(
             camera_points,
             lidar_points,
             self.tracker.config.max_association_distance,
+            cluster_points=cluster_points if self.clusters_sustain else (),
+            cluster_gate=self.cluster_gate,
         )
         with self._measurement_lock:
             self._pending_measurements = measurements
