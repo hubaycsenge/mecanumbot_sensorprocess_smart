@@ -359,3 +359,135 @@ class TestReset:
         assert tracker.track_count == 0
         # And the clock restarts, so the first step after a reset has dt 0.
         assert confirmed(tracker, seen_at(2.0, 0.0), 99.0) == []
+
+
+def cluster_at(x, y, gate=0.45):
+    """Build a scan-cluster measurement: sustains a track, never starts one."""
+    return [Measurement(x, y, False, creates=False, gate=gate)]
+
+
+class TestScanClusters:
+    """The LiDAR's own account of where things stand, as a third measurement."""
+
+    def test_a_cluster_keeps_a_person_the_camera_has_lost(self):
+        # DR-SPAAM reports almost nothing on this LiDAR, so before clusters a
+        # track lived exactly as long as the camera held it.
+        tracker = PersonTracker(CONFIG)
+        tracker.step(seen_at(2.0, 0.0), 0.0)
+        tracker.step(seen_at(2.0, 0.0), 0.1)
+        now = 0.1
+        for _ in range(25):
+            now += 0.1
+            positions = confirmed(tracker, cluster_at(2.0, 0.0), now)
+        assert len(positions) == 1
+        assert positions[0][0] == pytest.approx(2.0, abs=0.1)
+
+    def test_a_cluster_follows_the_person_as_they_walk(self):
+        tracker = PersonTracker(CONFIG)
+        tracker.step(seen_at(2.0, 0.0), 0.0)
+        tracker.step(seen_at(2.0, 0.0), 0.1)
+        now, x = 0.1, 2.0
+        for _ in range(20):
+            now += 0.1
+            x += 0.1  # 1 m/s
+            positions = confirmed(tracker, cluster_at(x, 0.0), now)
+        assert positions[0][0] == pytest.approx(x, abs=0.25)
+
+    def test_a_cluster_never_starts_a_track_even_in_the_blind_zone(self):
+        # The blind zone lets a DR-SPAAM detection start a track; a bare
+        # cluster is only something person-sized, and a room is full of them.
+        tracker = PersonTracker(CONFIG)
+        for step in range(20):
+            tracker.step(cluster_at(0.5, 0.0), step * 0.1, CAMERA)
+        assert tracker.track_count == 0
+
+    def test_a_lidar_detection_still_may_in_the_blind_zone(self):
+        tracker = PersonTracker(CONFIG)
+        for step in range(8):
+            tracks = tracker.step(lidar_at(0.5, 0.0), step * 0.1, CAMERA)
+        assert len(tracks) == 1
+
+    def test_a_cluster_across_the_room_does_not_take_the_track(self):
+        tracker = PersonTracker(CONFIG)
+        tracker.step(seen_at(2.0, 0.0), 0.0)
+        tracker.step(seen_at(2.0, 0.0), 0.1)
+        # 0.7 m away is inside the tracker's own gate and outside a cluster's.
+        tracks = tracker.step(cluster_at(2.7, 0.0), 0.2)
+        assert tracks[0].time_since_update > 0.0
+
+    def test_the_camera_time_limit_still_applies_in_view(self):
+        tracker = PersonTracker(CONFIG)
+        tracker.step(seen_at(3.0, 0.0), 0.0, CAMERA)
+        tracker.step(seen_at(3.0, 0.0), 0.1, CAMERA)
+        now = 0.1
+        while now < CONFIG.max_uncorroborated_time + 1.0:
+            now += 0.1
+            positions = confirmed(tracker, cluster_at(3.0, 0.0), now)
+            tracker_alive = bool(positions)
+        # In front of the camera a cluster buys time, not belief.
+        assert not tracker_alive
+
+    def test_a_far_pairing_does_not_cost_a_track_its_near_one(self):
+        # Two tracks, two measurements; one measurement is only in reach of one
+        # track. The assignment must not hand it the other pair's partner.
+        tracker = PersonTracker(CONFIG)
+        for now in (0.0, 0.1):
+            tracker.step(
+                [Measurement(0.0, 0.0, True), Measurement(2.0, 0.0, True)], now
+            )
+        tracks = tracker.step(
+            [
+                Measurement(0.3, 0.0, False, creates=False, gate=0.45),
+                Measurement(2.6, 0.0, True),
+            ],
+            0.2,
+        )
+        assert all(track.time_since_update == 0.0 for track in tracks)
+
+    def test_combining_marks_clusters_and_drops_duplicates(self):
+        measurements = combine_measurements(
+            [(2.0, 0.0)],
+            [(4.0, 0.0)],
+            0.9,
+            cluster_points=[(2.1, 0.0), (4.2, 0.0), (0.0, 3.0)],
+            cluster_gate=0.45,
+        )
+        kinds = [(m.corroborated, m.creates, m.gate) for m in measurements]
+        assert kinds == [(True, True, None), (False, True, None), (False, False, 0.45)]
+        assert (measurements[-1].x, measurements[-1].y) == (0.0, 3.0)
+
+    def test_without_clusters_combining_is_what_it_was(self):
+        assert combine_measurements([(2.0, 0.0)], [(4.0, 0.0)], 0.9) == [
+            Measurement(2.0, 0.0, True),
+            Measurement(4.0, 0.0, False),
+        ]
+
+
+class TestCoastVelocity:
+    def test_a_coasting_track_does_not_run_away(self):
+        # 2026-09-30, 09:02 bag: two fixes 0.3 m apart became 3 m/s, and the
+        # track coasted three metres across the room and out through the wall.
+        tracker = PersonTracker(CONFIG)
+        tracker.step(seen_at(2.0, 0.0), 0.0)
+        tracker.step(seen_at(2.3, 0.0), 0.1)
+        last = tracker.confirmed_tracks()[0].position
+        now = 0.1
+        while now < CONFIG.max_coast_time - 0.05:
+            now += 0.1
+            tracks = tracker.step([], now)
+            if tracks:
+                last = tracks[0].position
+        assert last[0] - 2.3 < 1.0
+
+    def test_the_old_behaviour_is_one_setting_away(self):
+        free = TrackerConfig(coast_velocity_time=0.0)
+        damped, undamped = PersonTracker(CONFIG), PersonTracker(free)
+        for tracker in (damped, undamped):
+            tracker.step(seen_at(2.0, 0.0), 0.0)
+            tracker.step(seen_at(2.3, 0.0), 0.1)
+            for step in range(2, 10):
+                tracker.step([], step * 0.1)
+        assert (
+            undamped.confirmed_tracks()[0].position[0]
+            > damped.confirmed_tracks()[0].position[0]
+        )

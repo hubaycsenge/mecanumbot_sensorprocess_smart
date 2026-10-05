@@ -36,9 +36,9 @@ tree (the Ultralytics one does not); see [ROS4HRI (REP-155) output](#ros4hri-rep
 ## Pipeline
 
 ```text
-scan ──► mecanumbot_lidar_detect_people ──► dr_spaam/dets ─┐
-                                                           ├─► mecanumbot_locate_detections ──► people_fusion
-camera ─► mecanumbot_cam_detect_people ──► cam_people_detections ┘
+scan ──► mecanumbot_lidar_detect_people ──► dets ──────────┐
+   └───────────────── (clusters) ──────────────────────────┼─► mecanumbot_locate_detections ─┬─► people_fusion
+camera ─► mecanumbot_cam_detect_people ──► cam_people_detections ┘                           └─► lidar_candidates
                                        └─► /humans/bodies/…  (ROS4HRI, DeepStream variant)
 
                        ... or, for the fetch game, instead of the pose detector:
@@ -77,7 +77,7 @@ detector it needs:
 | `mecanumbot_seek` | `pose` (for the alert's audience) | `direct` (`topic` when the Deep3R client needs the stream in T2) |
 | `mecanumbot_fetch_behaviour` | `fetch` | `direct` |
 
-`mecanumbot_bringup`'s `launch_external.launch.py` used to start `mecanumbot_lidar_detect_people` unconditionally on the operator PC, under the same node name and namespace as the one here — so it either duplicated the robot's detector on `dr_spaam/dets` and `subject_pose` or ran with nothing subscribed. It is now behind `use_people_detection`, default false. Set it true only to run DR-SPAAM off the robot, and then keep the robot's off (`use_lidar_people:=false`, or the tree's `use_perception:=false`).
+`mecanumbot_bringup`'s `launch_external.launch.py` used to start `mecanumbot_lidar_detect_people` unconditionally on the operator PC, under the same node name and namespace as the one here — so it either duplicated the robot's detector on `dets` and `subject_pose` or ran with nothing subscribed. It is now behind `use_people_detection`, default false. Set it true only to run DR-SPAAM off the robot, and then keep the robot's off (`use_lidar_people:=false`, or the tree's `use_perception:=false`).
 
 ### Arguments
 
@@ -183,7 +183,7 @@ by either launch file.
 | `conf_thresh`               | `0.45`                   | Minimum DR-SPAAM class score for a detection to be kept.                              |
 | `stride`                    | `2`                      | Detector stride passed to DR-SPAAM. See *GPU load control* below.                     |
 | `scan_topic`                | `/mecanumbot/scan`       | Input laser scan topic.                                                               |
-| `detections_topic`          | `dets`                   | Output detection topic (`dr_spaam/dets` in the shipped YAML).                         |
+| `detections_topic`          | `dets`                   | Output detection topic. The fusion node subscribes to it and the trees wait for it before their first tick. (The YAML said `dr_spaam/dets` for as long as it was not being loaded — see *The parameter file* below.) |
 | `rviz_topic`                | `dets_marker`            | Marker topic name (unused while marker publishing is disabled).                       |
 | `leading_mode`              | `true`                   | Enables the `subject_pose` publisher.                                                 |
 | `obstacle_exclusion_radius` | `0.2`                    | Inflation radius in metres applied to the keepout mask.                               |
@@ -905,6 +905,7 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 | Topic                             | Data type                     | Function                                                                                    |
 | --------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
 | `people_fusion`                   | `geometry_msgs/msg/PoseArray` | Publishes fused detections in map space.                                                    |
+| `lidar_candidates`                | `geometry_msgs/msg/PoseArray` | Where the LiDAR sees something person-sized that the static map does not explain, in map space. One message per scan, **empty when there are none**, so its traffic says the fusion is running. What `mecanumbot_movement_behaviours`' body gaze points the head at. |
 | `cam_people_detections/left_FOV`  | `geometry_msgs/msg/PoseArray` | Left field-of-view bound of each camera detection. Only created when `debug_mode` is true.  |
 | `cam_people_detections/right_FOV` | `geometry_msgs/msg/PoseArray` | Right field-of-view bound of each camera detection. Only created when `debug_mode` is true. |
 | `ball_fusion`                     | `geometry_msgs/msg/PoseArray` | Tracked balls in map space. Mirrors `people_fusion`; what rviz draws. |
@@ -915,8 +916,8 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 | Topic                   | Data type                                     | Processing                                                             |
 | ----------------------- | --------------------------------------------- | ---------------------------------------------------------------------- |
 | `cam_people_detections` | `mecanumbot_msgs/msg/CamPersonDetectionArray` | Receives camera detections for fusion (own callback group).            |
-| `dets`                  | `geometry_msgs/msg/PoseArray`                 | Receives LiDAR people detections; each message triggers a fusion pass. Relative and not remapped by `perception.launch.py`, while the shipped YAML has the LiDAR node publish on `dr_spaam/dets`. |
-| `scan`                  | `sensor_msgs/msg/LaserScan`                   | Stores the current scan for range extrapolation.                       |
+| `dets`                  | `geometry_msgs/msg/PoseArray`                 | Receives LiDAR people detections and keeps them for `dets_timeout`. No longer what triggers a fusion pass. |
+| `scan`                  | `sensor_msgs/msg/LaserScan`                   | Each scan is cut into clusters and triggers a fusion pass.             |
 | `/map`                  | `nav_msgs/msg/OccupancyGrid`                  | Loads the static map grid (TRANSIENT_LOCAL QoS).                       |
 | `/amcl_pose`            | `geometry_msgs/msg/PoseWithCovarianceStamped` | Tracks the robot pose in map coordinates.                              |
 | `cam_ball_boxes`        | `vision_msgs/msg/Detection2DArray`            | Ball boxes from the fetch detector, in image pixels. Placed on the ball timer, not on arrival. |
@@ -926,9 +927,21 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 
 | Parameter                           | Default | Function                                                                         |
 | ----------------------------------- | ------- | -------------------------------------------------------------------------------- |
-| `obstacle_buffer_x`                 | `0.5`   | Metres added behind a wall when a detection has to be pushed out of an obstacle. |
+| `obstacle_buffer_x`                 | `0.5`   | Metres a detection is put **behind** an occluder it ranged onto, when the map has free floor there. |
 | `debug_mode`                        | `false` | Enables the left/right FOV publishers.                                           |
 | `cam_detection_timeout`             | `0.6`   | Seconds the last `CamPersonDetectionArray` stays usable. Past it the bearings are dropped rather than re-used against fresh scans. |
+| `dets_timeout`                      | `0.5`   | The same for the LiDAR detector's last `dets` message, now that the fusion runs on the scan rather than on that message. |
+| `camera_bearing_offset_deg`         | `-7.5`  | Added to every camera bearing before it is looked up in the scan. **Measured** 2026-10-02 from the bags of 2026-09-23..30: the legs the LiDAR sees sit 7.5° clockwise of the bearing the camera gives the same person. See *Ranging a camera detection*. `0.0` switches it off. |
+| `wedge_margin_deg`                  | `4.0`   | Degrees a bearing wedge is widened by on each side when matched against the scan. |
+| `clusters.enabled`                  | `true`  | Cut the scan into clusters. `false` leaves only DR-SPAAM detections and the bare-scan fallback, and publishes no candidates. |
+| `clusters.jump` / `clusters.max_gap` | `0.2` / `1` | Metres two neighbouring returns may differ by and still be one surface; dropped beams bridged between them. |
+| `clusters.min_width` / `clusters.max_width` | `0.10` / `1.2` | Metres. What "person-sized" means: a leg is ~0.12, a person on a bean bag about a metre. |
+| `clusters.max_range`                | `4.5`   | Metres. Beyond this a leg is one beam or none. |
+| `clusters.map_inflation` / `clusters.max_explained` | `0.2` / `0.5` | Metres the map's obstacles are grown by, and the share of a cluster's returns that must lie on them for it to be "the room". |
+| `clusters.sustain_tracks` / `clusters.sustain_gate` | `true` / `0.45` | Whether candidates may keep an existing track alive, and how near its prediction one must be [m]. They never start a track. |
+| `clusters.candidates_topic`         | `lidar_candidates` | Where the candidates are published. |
+| `occlusion.front_standoff`          | `0.3`   | Metres in front of mapped structure a person is put when there is nowhere to stand behind it. |
+| `occlusion.max_depth`               | `0.6`   | The thickest thing that still counts as an occluder with a far side [m]. |
 | `tracking.enabled`                  | `true`  | Map-frame Kalman tracking. `false` republishes the raw per-frame fusion.          |
 | `tracking.publish_rate`             | `10.0`  | Hz at which `people_fusion` is published, independent of when detections arrive.  |
 | `tracking.max_association_distance` | `0.9`   | Metres a measurement may sit from a track's prediction and still be the same person. |
@@ -938,11 +951,12 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 | `tracking.measurement_noise`        | `0.25`  | Metres. The scale of the range jump when the bearing wedge slides off a leg.     |
 | `tracking.process_noise`            | `0.08`  | How readily the estimate follows a person changing direction.                    |
 | `tracking.max_reported_speed`       | `2.5`   | m/s ceiling on the reported velocity; above this is an association error.        |
+| `tracking.coast_velocity_time`      | `0.4`   | Seconds over which a track that is only being predicted loses its velocity. `0.0` keeps it, as before 2026-10-02. |
 | `tracking.camera_frame`             | `mecanumbot/head_link` | Frame the blind zone is measured from. The head, not the base: the head turns. |
 | `tracking.exempt_close_range`       | `true`  | Treat a track nearer than `camera_blind_range` as one the camera cannot check.   |
 | `tracking.exempt_outside_fov`       | `true`  | Treat a track outside `camera_half_fov_deg` as one the camera cannot check.      |
 | `tracking.camera_blind_range`       | `0.9`   | Metres inside which there is not enough of a person in frame to detect at all.   |
-| `tracking.camera_half_fov_deg`      | `30.0`  | Half the camera's horizontal field of view.                                      |
+| `tracking.camera_half_fov_deg`      | `30.0`  | Half the camera's horizontal field of view. `25.5` in the shipped YAML (half the measured 51°) — which, like everything else in that file, only took effect on 2026-10-02. |
 | `tracking.max_blind_zone_time`      | `30.0`  | Seconds a track is reported on the exemption before the camera has to agree again. |
 | `tracking.blind_zone_min_hits`      | `5`     | Consecutive LiDAR-only measurements inside the blind zone that confirm a track.  |
 | `tracking.blind_zone_creates_tracks`| `true`  | Whether a LiDAR-only measurement in the blind zone may start a track, not just sustain one. |
@@ -972,25 +986,78 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 
 ### Behavior
 
-- For every **fresh** camera detection (no older than `cam_detection_timeout`), resolves
-  a range in three steps: first look for a LiDAR detection whose bearing falls inside the
-  person's angular bounds — of those, the one nearest the middle of the wedge, which is
-  the one the camera is actually looking at; if there is none, extrapolate from the raw
-  scan using the 20th percentile of the valid ranges inside the bounds (so background
-  hits do not dominate); if that also fails, drop the detection. The bounds are
-  signed bearings and the LD08 scan runs 0..2pi, so the beams are matched modulo a
-  full turn (`scan_wedge.py`); until 2026-09-30 every person to the right of the
-  camera axis found no beams and was dropped.
-- Validates the result against the static map: a pose landing on an occupied cell is
-  ray-traced outward until free space is found (up to 4 m of wall thickness) and then
-  offset by `obstacle_buffer_x`.
+- Runs a fusion pass on every scan. It used to run on every `dets` message, which made
+  the DR-SPAAM node a single point of failure for a pipeline that mostly does not use
+  its output.
+- Cuts the scan into **clusters** and keeps the **candidates**: clusters the size of a
+  person that the static map does not explain. Published on `lidar_candidates`.
+- For every **fresh** camera detection (no older than `cam_detection_timeout`), shifts
+  its bearings by `camera_bearing_offset_deg` and resolves a position, best evidence
+  first: a DR-SPAAM detection inside the wedge; then the candidate cluster the wedge
+  points at; then a return from the bare scan, which by that point can only be the room
+  itself. See *Ranging a camera detection* below. The beams are matched modulo a full
+  turn (`scan_wedge.py`); until 2026-09-30 every person to the right of the camera axis
+  found no beams and was dropped.
+- A position that lands on mapped structure is put **behind** it by `obstacle_buffer_x`
+  if the map has free floor there within `occlusion.max_depth`, and
+  `occlusion.front_standoff` **in front** of it otherwise.
 - Transforms the accepted poses from `mecanumbot/base_link` into `map`, and hands them
-  to the map-frame tracker along with the LiDAR-only detections (see below).
+  to the map-frame tracker along with the LiDAR-only detections and the candidates (see below).
 - Publishes the tracker's confirmed people as a `PoseArray` on a timer at
   `tracking.publish_rate`, with a current stamp.
 - Runs on a 4-thread `MultiThreadedExecutor`. The tracker is stepped only from the
   publish timer, so it is touched by one thread; the measurement handover from the
-  LiDAR callback is the one place that locks.
+  scan callback is the one place that locks.
+
+#### Ranging a camera detection
+
+A camera detection is a bearing wedge and no range. Until 2026-10-02 the range was the
+20th percentile of the scan's returns inside the wedge, and in the bags of 2026-09-23 to
+2026-09-30 that is most of why a person the camera had plainly found was not tracked —
+on the last of them, 35 % of the time the camera saw somebody ended up in
+`people_fusion`. Replayed through the code below, 99 %.
+
+- **The percentile is not a return.** The LD08 gives about 210 beams a turn, 1.7° apart,
+  so a person's legs at 2 m are two of the seven beams in their wedge and the other five
+  are the wall behind. The 20th percentile of that is the wall or — interpolated — a
+  point between the two where nothing is. The fused position jumped by two metres from
+  frame to frame, and the tracker, which associates within 0.9 m, never saw the same
+  person twice. A **cluster** (`scan_clusters.py`) is a run of neighbouring returns at
+  about the same range: one surface, with a position of its own. The wedge now chooses a
+  cluster instead of averaging across several.
+- **The wedge was in the wrong place.** With the robot standing still, the legs the
+  LiDAR sees sit 7.5° clockwise of the bearing the camera gives the same person: 266
+  detections over five bags, per-bag medians −5.8° to −10.2°, larger close in (so a few
+  centimetres of sideways offset as well as a yaw). At 2 m that is 26 cm — the width of a
+  pair of legs. `camera_bearing_offset_deg` is that number. It is a calibration from
+  recorded data, not from a tape measure: **check it on the robot**, and re-measure if
+  either sensor is remounted. Which of the two is mounted askew does not matter here
+  (positions are taken in the LiDAR's frame, the one AMCL localises) but it does to
+  anything else that trusts the camera's bearings.
+- **A hit on the map is not always something to look behind.** The camera sits high
+  enough to see over the blue partitions and the LiDAR does not see through them, so a
+  wedge that ranges onto a mapped obstacle used to be walked along its ray until the map
+  was free again and the person put `obstacle_buffer_x` further on. Beyond the room's
+  outer wall the map is never free again, only unknown, and the walk did not stop
+  there: somebody sitting on a chair against the wall was published at (3.2, 3.0), off
+  the map. Now there has to *be* a behind — free, mapped floor within
+  `occlusion.max_depth`, and still free where the person would be put — and otherwise
+  they are placed `occlusion.front_standoff` in front of the hit.
+
+The candidates do two more things. They are published on `lidar_candidates`, which is
+how the LiDAR gets to say "something is standing there" before the camera has seen
+anything: the leading tree points the head at them (`body_gaze.py` in
+`mecanumbot_movement_behaviours`). And they **sustain** tracks. DR-SPAAM reports almost
+nothing on this LiDAR — 45 non-empty `dets` messages out of 5502 in the long run of
+2026-09-30 — so a track used to live exactly as long as the camera held it, and a person
+the robot had found was lost the moment it turned to lead them. A candidate within
+`clusters.sustain_gate` of a track's prediction now keeps it alive, on the same budgets
+as before (`max_uncorroborated_time` in front of the camera, `max_blind_zone_time` out
+of its view). A candidate never *starts* a track, in the blind zone or anywhere else: it
+is only something person-sized, and a room has a dozen of those. The cost is that a
+track whose person has walked off can settle on furniture standing within the gate of
+where they were, for up to those budgets; `clusters.sustain_tracks: false` goes back to
+the camera and DR-SPAAM alone.
 
 #### Map-frame tracking
 
@@ -1210,11 +1277,15 @@ ROS node name: `mecanumbot_cam_detect_tennis`.
 | mecanumbot_sensorprocess_smart/person_gating.py                        | Keypoint-evidence, hysteresis and temporal gate for camera detections. |
 | mecanumbot_sensorprocess_smart/person_tracking.py                      | Map-frame constant-velocity tracking of the fused detections, and the camera blind zone. |
 | mecanumbot_sensorprocess_smart/lidar_tracking.py                       | Scan-frame tracking of the DR-SPAAM detections, the motion gate and its re-seeding. |
+| mecanumbot_sensorprocess_smart/scan_clusters.py                        | The scan cut into surfaces, the person-sized ones the map does not explain, which one a camera wedge points at, and where a hit on mapped structure is placed. |
+| mecanumbot_sensorprocess_smart/scan_wedge.py                           | The scan's returns inside a signed bearing wedge, matched modulo a full turn. |
 | test/test_person_gating.py                                             | Unit tests for the detection gate; run without a ROS graph.          |
 | test/test_object_gating.py                                             | Unit tests for the fetch detector's gate; run without a ROS graph.   |
 | test/test_ball_locating.py                                             | Unit tests for the ball geometry and its tracker; run without a ROS graph. |
 | test/test_person_tracking.py                                           | Unit tests for the map-frame tracker; run without a ROS graph.       |
 | test/test_lidar_tracking.py                                            | Unit tests for the DR-SPAAM tracker; run without ROS, torch or `dr_spaam`. |
+| test/test_scan_clusters.py                                             | Unit tests for the scan clusters, the candidates, the wedge choice and the placement on mapped structure; run without ROS. |
+| test/test_config_keys.py                                               | That every section of the parameter file is keyed so a namespaced node loads it, and that the LiDAR detector publishes where the fusion listens. |
 | test/test_debug_overlay.py                                             | Unit tests for the debug drawing: a missing joint is never drawn; run without ROS. |
 | test/test_nvinfer_config.py                                            | Unit tests for where an nvinfer config's parser library and relative paths resolve; run without ROS or DeepStream. |
 | launch/perception.launch.py                                            | The pipeline: DR-SPAAM, one camera detector and the fusion. Does not start the camera. Included by every behaviour launch file. |
@@ -1240,6 +1311,23 @@ model, class and gate blocks for the fetch detector (under
 person-box blocks (under `mecanumbot_locate_detections`); the Ultralytics camera and
 tennis nodes rely on their in-code defaults unless overridden on the command line or in
 the launch file.
+
+### The parameter file
+
+Every top-level key in `config/lidar_peopledetect_config.yaml` is written
+`/**/<node name>:`, and has to be. A bare `<node name>:` matches a node in the **root**
+namespace only, and these nodes run in `mecanumbot` — so until 2026-10-02 nothing in the
+file reached any of them. Each node started on the defaults in its own source, and every
+value tuned in the YAML was a value nobody was using. The defaults happened to agree with
+the file almost everywhere, which is why it went unnoticed; the three places they did
+not were `tracking.camera_half_fov_deg` (30 in the code, 25.5 in the file) and the LiDAR
+detector's two topic names (`dets` in the code, `dr_spaam/dets` in the file — which,
+had the file loaded, would have cut the fusion off from the detector, so the file now
+says `dets`).
+
+`/**/` matches the node in whatever namespace it is started in. To see what a node is
+really running on, ask it: `ros2 param get /mecanumbot/<node> <parameter>`.
+`test/test_config_keys.py` holds the keys to that form.
 
 ## Build and run
 
