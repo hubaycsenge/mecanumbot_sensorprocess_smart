@@ -140,77 +140,56 @@
     keypoint_scaling: auto
 
     # ---- detection gate ----
-    # A detection is accepted on keypoint evidence and temporal consistency,
-    # not on the box score alone: a bean bag or an occluder can score a
-    # plausible box while producing no coherent skeleton, and a partly
-    # occluded person scores lower than one that does. See person_gating.py.
+    # A detection is accepted on confidence and temporal consistency, not on
+    # the box score alone: a bean bag or an occluder can score a plausible box
+    # while placing no joint the network is sure of. See person_gating.py.
+    #
+    # WHICH joints were found is deliberately not asked. Until 2026-10-19 this
+    # gate wanted a torso far away and legs close up (and briefly a face at the
+    # bottom edge), each an assumption about which part of a person the camera
+    # frames at one tilt of the head; with the trees tilting it, the 2026-10-16
+    # leading pilot lost people the network was sure of. The head is now aimed
+    # at the middle of the body the LiDAR expects (body_gaze_*, in the
+    # behaviour constants), and any part in frame counts.
     detection_gate:
       # Box confidence to *acquire* an unknown blob vs. to *retain* one already
       # confirmed. Retain must be the looser of the two -- that hysteresis is
-      # what keeps a person who turns away or is briefly occluded.
+      # what keeps a person who turns away or is briefly occluded. Low, because
+      # a body the frame cuts off scores lower than a whole one (0.32-0.54 for
+      # head and shoulders in the pilot); the joint confidences below are what
+      # keep a prop out at this level.
       # Note the nvinfer pre-cluster-threshold (0.25) is a hard floor: nothing
       # below it ever reaches this node.
-      box_conf_acquire: 0.6
-      box_conf_retain: 0.35
+      box_conf_acquire: 0.4
+      box_conf_retain: 0.3
       # Joint visibility. Decides which keypoints are usable, NOT whether the
       # object is a person, so it is deliberately far below the box gates;
       # raising it to the box threshold is what made distant people lose all
       # their keypoints.
       keypoint_conf: 0.3
-      # Keypoint evidence: how much of a body has to be found. This is the
-      # check props actually fail. Raise the acquire values if bean bags still
-      # get through, lower them if people at range are missed.
-      best_keypoint_conf_acquire: 0.7
-      best_keypoint_conf_retain: 0.5
-      min_valid_keypoints_acquire: 6
-      min_valid_keypoints_retain: 3
-      # Of the four shoulder/hip joints. A body has a torso; a cushion does not.
-      min_torso_keypoints_acquire: 2
-      min_torso_keypoints_retain: 1
-      # Box geometry, applied in both modes. People are taller than wide;
-      # floor props are squat. Raise max_box_aspect_ratio if people are
-      # expected seated or very close to the camera.
+      # How sure the network has to be of the joints it placed, anywhere on
+      # the body: this is the check props fail. Raise the acquire values if
+      # bean bags get through, lower them if people are missed.
+      best_keypoint_conf_acquire: 0.5
+      best_keypoint_conf_retain: 0.35
+      min_valid_keypoints_acquire: 2
+      min_valid_keypoints_retain: 1
+      # Box sanity. Loose on purpose: a cropped body -- head and shoulders, a
+      # pair of legs up close -- is legitimately wider than a standing one.
       min_box_height: 40.0
-      max_box_aspect_ratio: 1.6
-      # ---- close range ----
-      # The camera sits on the head at about 0.22 m with a ~30 deg vertical
-      # FOV, so from roughly 3 m in a person's torso is above the top of the
-      # frame and only their legs are left: at 0.6 m the camera sees the world
-      # from the floor to about 0.4 m. Requiring a torso of them cannot be
-      # met, and close is where a person matters most. A box that starts at
-      # the top edge (the body continues above the FOV) and fills most of the
-      # frame height is therefore judged on these thresholds instead, with the
-      # hip/knee/ankle count standing in for the torso -- a panel or a bean
-      # bag pressed against the camera has the same geometry but still no leg.
+      max_box_aspect_ratio: 3.5
+      # ---- the close_range label ----
+      # Not a gate: a box that starts at the top edge (within the larger of
+      # proximity_top_margin px and proximity_top_fraction of the frame) and
+      # fills proximity_min_height_fraction of the frame, or fills
+      # proximity_dominant_height_fraction of it wherever its top sits, is a
+      # body that carries on above the field of view, and is published with
+      # type close_range instead of full_body.
       proximity_enabled: true
       proximity_min_height_fraction: 0.6
-      # How near the top edge the box has to start, in pixels and as a
-      # fraction of the frame height; the larger of the two wins. The box is
-      # drawn round the body the network found, not round the person, so on
-      # loose clothing -- a long skirt, a coat -- the top lands tens of pixels
-      # inside the frame and an absolute 8 px could not be met: the detection
-      # then fell back on the full-body gate and was rejected for a torso that
-      # was never in shot. 0.08 is 58 px at 720p.
       proximity_top_margin: 8.0
       proximity_top_fraction: 0.08
-      # ... and the escape hatch when even that fails: a box filling this much
-      # of the frame is close whatever its top edge does, because nothing far
-      # away is that big. The lower-body keypoint count below is what still
-      # has to be satisfied, so this does not let a prop through.
       proximity_dominant_height_fraction: 0.85
-      # A cropped body scores lower than a whole one, so the box gates drop.
-      proximity_box_conf_acquire: 0.4
-      proximity_box_conf_retain: 0.3
-      # Knees and ankles score lower than faces and shoulders, so the
-      # whole-body best_keypoint_conf_* is unmeetable on a legs-only view.
-      proximity_best_keypoint_conf_acquire: 0.5
-      proximity_best_keypoint_conf_retain: 0.35
-      proximity_min_valid_keypoints_acquire: 2
-      proximity_min_valid_keypoints_retain: 1
-      # Of the six hip/knee/ankle joints. This is what keeps props out.
-      proximity_min_lower_body_acquire: 2
-      proximity_min_lower_body_retain: 1
-      proximity_max_box_aspect_ratio: 2.5
       # Temporal confirmation: frames a blob must pass the acquire gate before
       # it is published, and how long a confirmed track survives without one.
       min_hits: 2
@@ -222,7 +201,7 @@
     # A face in the bottom band of the frame, from any box, accepted or not, is
     # published on cam_people_detections/low_head as its bearing. The trees tilt
     # the head down on it while they search: somebody sitting low shows only
-    # their face to a camera tilted up, and the gate wants a torso.
+    # their face to a camera tilted up, at the very edge of the picture.
     low_head_cue:
       enabled: true
       keypoint_conf: 0.5

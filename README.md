@@ -436,31 +436,20 @@ they do:
 
 | Parameter                             | Default | Function                                                                       |
 | ------------------------------------- | ------- | ------------------------------------------------------------------------------ |
-| `box_conf_acquire`                    | `0.6`   | Box confidence needed to start treating a blob as a person.                    |
-| `box_conf_retain`                     | `0.35`  | Box confidence needed to keep an already-confirmed person.                     |
+| `box_conf_acquire`                    | `0.4`   | Box confidence needed to start treating a blob as a person. Low, because a body the frame cuts off scores lower than a whole one. |
+| `box_conf_retain`                     | `0.3`   | Box confidence needed to keep an already-confirmed person.                     |
 | `keypoint_conf`                       | `0.3`   | Joint visibility threshold: below it a keypoint is `NaN` and is not drawn.     |
-| `best_keypoint_conf_acquire`          | `0.7`   | The best single joint must reach this to acquire.                              |
-| `best_keypoint_conf_retain`           | `0.5`   | ... and this to retain.                                                        |
-| `min_valid_keypoints_acquire`         | `6`     | Joints over `keypoint_conf` needed to acquire.                                 |
-| `min_valid_keypoints_retain`          | `3`     | ... and to retain.                                                             |
-| `min_torso_keypoints_acquire`         | `2`     | Of the four shoulder/hip joints, how many are needed to acquire.               |
-| `min_torso_keypoints_retain`          | `1`     | ... and to retain.                                                             |
-| `min_box_height`                      | `40.0`  | Minimum box height in pixels, in both modes.                                   |
-| `max_box_aspect_ratio`                | `1.6`   | Maximum width/height, in both modes. People are taller than wide.              |
-| `proximity_enabled`                   | `true`  | Enables the close-range branch below; `false` restores torso-only behaviour.   |
-| `proximity_min_height_fraction`       | `0.6`   | Share of the frame height a box must fill to count as close.                   |
+| `best_keypoint_conf_acquire`          | `0.5`   | The best single joint, wherever it is on the body, must reach this to acquire. |
+| `best_keypoint_conf_retain`           | `0.35`  | ... and this to retain.                                                        |
+| `min_valid_keypoints_acquire`         | `2`     | Joints over `keypoint_conf`, any of them, needed to acquire.                   |
+| `min_valid_keypoints_retain`          | `1`     | ... and to retain.                                                             |
+| `min_box_height`                      | `40.0`  | Boxes shorter than this [px] are rejected.                                     |
+| `max_box_aspect_ratio`                | `3.5`   | Boxes wider than this many times their height are rejected; loose, because head and shoulders, or legs up close, are wide. |
+| `proximity_enabled`                   | `true`  | Labels detections whose box runs off the top of the frame `close_range`; `false` publishes everything as `full_body`. Not a gate. |
+| `proximity_min_height_fraction`       | `0.6`   | Share of the frame height a box starting at the top edge must fill to be labelled close. |
 | `proximity_top_margin`                | `8.0`   | Pixels from the top edge within which a box counts as clipped by it; a floor for small frames. |
 | `proximity_top_fraction`              | `0.08`  | The same tolerance as a share of the frame height; the larger of the two wins (58 px at 720p). |
-| `proximity_dominant_height_fraction`  | `0.85`  | A box filling this much of the frame is close whatever its top edge does.       |
-| `proximity_box_conf_acquire`          | `0.4`   | Box confidence to acquire a close-range (cropped, therefore lower-scoring) body. |
-| `proximity_box_conf_retain`           | `0.3`   | ... and to retain it.                                                          |
-| `proximity_best_keypoint_conf_acquire` | `0.5`  | Confidence the best joint needs to acquire close up; knees and ankles score below faces. |
-| `proximity_best_keypoint_conf_retain` | `0.35`  | ... and to retain.                                                             |
-| `proximity_min_valid_keypoints_acquire` | `2`   | Joints over `keypoint_conf` needed to acquire at close range.                  |
-| `proximity_min_valid_keypoints_retain`  | `1`   | ... and to retain.                                                             |
-| `proximity_min_lower_body_acquire`    | `2`     | Of the six hip/knee/ankle joints, how many are needed to acquire close up.     |
-| `proximity_min_lower_body_retain`     | `1`     | ... and to retain.                                                             |
-| `proximity_max_box_aspect_ratio`      | `2.5`   | Maximum width/height for a close-range box.                                    |
+| `proximity_dominant_height_fraction`  | `0.85`  | A box filling this much of the frame is labelled close whatever its top edge does. |
 | `min_hits`                            | `2`     | Frames a blob must pass the acquire gate before anything is published.         |
 | `max_missed_time`                     | `0.5`   | Seconds a confirmed track survives without a detection.                        |
 | `iou_threshold`                       | `0.3`   | Minimum box IoU to associate a detection with an existing track.               |
@@ -471,20 +460,20 @@ they do:
 The pose network reports one box confidence plus 17 keypoint confidences per object.
 Deciding on the box confidence alone — which is what this node used to do — has no
 threshold that works: a bean bag or a wall-panel occluder can score a plausible box
-while producing no coherent skeleton, and a partly occluded person scores *lower* than
-such a prop. Raising the threshold to exclude the props therefore drops real people, and
-lowering it to keep them lets the props back in. The two failure modes are not ordered
-along the same axis, so they are separated along three:
+while placing no joint the network is sure of, and a partly visible person scores
+*lower* than such a prop. Raising the threshold to exclude the props therefore drops real
+people, and lowering it to keep them lets the props back in. The two failure modes are
+not ordered along the same axis, so they are separated along three:
 
-1. **Keypoint evidence.** How much of a body was actually found: how many joints cleared
-   `keypoint_conf`, how confident the best one is, and whether a torso (at least
-   `min_torso_keypoints_*` of the four shoulder/hip joints) is present. This is the check
-   props fail — the network has no body parts to place on them. A cheap box-geometry
-   check (`min_box_height`, `max_box_aspect_ratio`) rejects squat floor props outright.
+1. **Confidence.** The box score, and how sure the network is of the joints it placed:
+   how many cleared `keypoint_conf` and how confident the best one is. **Which** joints
+   they are is not asked. This is the check props fail — the network has nothing to place
+   on them. A cheap box-geometry check (`min_box_height`, `max_box_aspect_ratio`) rejects
+   slivers and very wide floor props outright.
 2. **Hysteresis.** A blob must clear the strict `*_acquire` thresholds to be taken
    seriously; once confirmed it is kept on the looser `*_retain` ones. This is what stops
    a person who turns away, is partly occluded, or walks into poor light from dropping
-   out. Retention is still evidence-based, so a prop that happens to overlap a confirmed
+   out. Retention is still confidence-based, so a prop that happens to overlap a confirmed
    person does not inherit its track.
 3. **Temporal confirmation.** A candidate must pass the acquire gate on `min_hits`
    frames before it is published, and a confirmed track tolerates `max_missed_time` of
@@ -496,80 +485,37 @@ An unconvincing frame updates no state at all: it neither refreshes a track nor 
 one, so props never accumulate hits and a person who genuinely leaves expires on
 `max_missed_time`.
 
-#### Close range: the person standing next to the robot
+#### Why the gate does not ask for a part of the body
 
-The camera is on the head, about **0.22 m** off the floor (`head_joint` at z = 0.168 in
-`mecanumbot.urdf`, plus the camera offset), with a vertical field of view of roughly
-**30°** at 1280×720 (51° horizontally, measured on 2026-09-15). That geometry decides what a person looks like as they approach:
+Until 2026-10-19 it did. Far away it wanted a torso (two of the four shoulder/hip
+joints, six joints in all); a second branch, picked when the box ran off the top of the
+frame, wanted legs instead, because a camera 0.23 m off the floor looking level frames a
+close person from the knees down. Each of those was an assumption about which part of a
+person the 30° frame shows, and each held for one tilt of the head only. The trees tilt
+it. In the 2026-10-16 leading pilot (`mecanumbot_directories/bag_debug/rosbag2_2026_10_16-*`)
+the head was up, and the gate threw out people the network was sure of: chest and arms
+at box 0.73–0.88 rejected as `near-legs 0<2`, and head and shoulders cut off by the
+bottom edge at box 0.32–0.54 rejected under the whole-body 0.6. Every rejected box
+sampled from those runs was a person.
 
-| Distance | What is in frame                     | Torso keypoints available |
-| -------- | ------------------------------------ | ------------------------- |
-| 0.6 m    | floor to ~0.4 m — calves and knees    | none                      |
-| 1.5 m    | floor to ~0.7 m — up to mid-thigh     | none                      |
-| 2.3 m    | floor to ~0.95 m — hips just arrive   | hips                      |
-| 3.7 m    | floor to ~1.4 m — shoulders arrive    | hips and shoulders        |
+So the head is now aimed at the middle of the body the LiDAR expects
+(`mecanumbot_movement_behaviours/body_gaze.py`), the part of a person in frame is
+whatever that shows, and the gate takes confidence wherever it is found.
+`test_person_gating.py` keeps the pilot's rejected boxes (`TestThePilot`) and the props
+with the same geometry, which must still fail.
 
-So a person closer than about 2.3 m has **no torso in the image at all**, and stage 1
-above — which requires `min_torso_keypoints_acquire` of the four shoulder/hip joints —
-could not acquire them however good the detection was. It is not a tuning problem: the
-evidence the gate asks for is outside the field of view. Close range is also where a
-person matters most, so the gate has a second branch for it.
+#### The `close_range` label
 
-Which branch applies is decided from the **box geometry, not from the keypoints** —
-inferring "this is a close body" from the very joints the branch then stops requiring
-would make the relaxation self-justifying. A detection is close-range when **either**:
-
-- its box starts within `proximity_top_margin` px **or** `proximity_top_fraction` of the
-  frame height of the **top** edge, whichever is larger (the body carries on above the
-  field of view), **and** spans at least `proximity_min_height_fraction` of the frame; or
-- its box spans `proximity_dominant_height_fraction` of the frame, wherever its top
-  edge happens to sit — nothing at a distance is that big.
-
-For this camera those defaults amount to "nearer than roughly 3.4 m", which overlaps the
-2.3 m at which hips appear — the two branches cover the whole approach with no distance
-at which a person falls between them.
-
-**Why "starts at the top edge" has to be forgiving.** The box is drawn round the body
-the *network* found, not round the person. Loose clothing is not recognised as body, so
-a detection that is unmistakably close — legs filling the picture — can still have its
-top edge tens of pixels inside the frame. A long skirt is the case this was written for;
-a coat, or a chair under a floor-length tablecloth, behaves the same way. The original
-absolute `proximity_top_margin: 8.0` could not be met by any of them: the detection fell
-back on the full-body gate and was rejected as `keypoints 3<6` — for a torso that was
-never in shot. Hence the fractional margin (0.08, i.e. 58 px at 720p) and the
-dominant-height escape hatch.
-
-On that branch the torso requirement is replaced by a **lower-body** one
-(`proximity_min_lower_body_*`, counted over hips, knees and ankles), the keypoint counts
-drop to `proximity_min_valid_keypoints_*`, the box-confidence gates drop to
-`proximity_box_conf_*` because a cropped body scores lower than a whole one, and the
-shape check loosens to `proximity_max_box_aspect_ratio` — legs seen from half a metre
-can be wider than the slice of them that fits in the frame is tall.
-
-What keeps the relaxation honest is that the geometry and the keypoints have to agree. A
-wall panel or a bean bag pushed up against the camera has exactly the same box geometry,
-but it still cannot produce a leg: `proximity_min_lower_body_acquire` of the six
-hip/knee/ankle joints is the check that does the work, and the joints it counts have to
-clear `proximity_best_keypoint_conf_acquire`. That last one is lower than the whole-body
-`best_keypoint_conf_acquire` — knees and ankles score below faces and shoulders, so the
-whole-body value was unmeetable on a legs-only view — but it is still far above
-`keypoint_conf`, so one joint has to be placed convincingly. Small floor props are
-unaffected either way: they are not clipped by the top of the frame and do not fill it,
-so they are still judged on the ordinary gate.
-
-Because the geometry test is now the looser of the two, the lower-body count is the only
-thing standing between a draped chair and a person. `test_person_gating.py` pins that
-down (`TestLooseClothing`), including the tablecloth case.
-
-Detections accepted this way are published with `type` set to `close_range` rather than
-`full_body`. The bearing itself is computed exactly as usual, from whichever joints were
-found — legs give a bearing the way a whole body does — but a consumer that needs arms or
-a head (the ostensive tree reading gestures, for instance) can now tell that the upper
-body is *outside the frame* rather than merely undetected. On the debug image close-range
-boxes are green rather than blue and labelled `near`; rejections on this branch have
-their reason prefixed `near-`.
-
-Set `proximity_enabled: false` to go back to the torso-only behaviour.
+What is left of the old close-range branch is a label. A detection whose box starts
+within `proximity_top_margin` px or `proximity_top_fraction` of the frame height of the
+top edge (whichever is larger) and spans `proximity_min_height_fraction` of the frame, or
+spans `proximity_dominant_height_fraction` of it wherever its top sits, is a body that
+carries on above the field of view. It is published with `type` set to `close_range`
+rather than `full_body`, and drawn green rather than blue on the debug image, so a
+consumer can tell that the rest of the body is outside the frame rather than undetected.
+The margin is forgiving because the box is drawn round the body the network found: on a
+long skirt or a coat its top lands tens of pixels inside the frame. The label does not
+change the verdict.
 
 Note that `keypoint_conf` is a *visibility* threshold — it decides which joints are
 usable, published as coordinates rather than `NaN`, and fed into the angular bounds. It

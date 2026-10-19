@@ -14,13 +14,16 @@ from mecanumbot_sensorprocess_smart.person_gating import (
     DetectionConfirmer,
     GateConfig,
     LEFT_ANKLE,
-    LEFT_HIP,
+    LEFT_EAR,
+    LEFT_ELBOW,
+    LEFT_EYE,
     LEFT_KNEE,
     LEFT_SHOULDER,
+    NOSE,
     NUM_KEYPOINTS,
     RIGHT_ANKLE,
-    RIGHT_HIP,
-    RIGHT_KNEE,
+    RIGHT_EAR,
+    RIGHT_EYE,
     RIGHT_SHOULDER,
     check_evidence,
     evaluate_evidence,
@@ -34,13 +37,9 @@ CONFIG = GateConfig()
 # A box that is plausibly a standing person: taller than wide, well clear of
 # the minimum height.
 PERSON_BOX = (100.0, 50.0, 200.0, 450.0)  # xmin, ymin, xmax, ymax
-PERSON_W = PERSON_BOX[2] - PERSON_BOX[0]
-PERSON_H = PERSON_BOX[3] - PERSON_BOX[1]
 
-# A 720p frame, and in it the box of someone standing close enough that the
-# camera -- mounted at shin height -- frames their legs only: it starts at the
-# top edge because the body carries on above the field of view, and runs most
-# of the way down the image.
+# A 720p frame, and in it the box of somebody standing close enough that the
+# body carries on above the top of the frame.
 IMAGE_HEIGHT = 720.0
 NEAR_BOX = (400.0, 0.0, 700.0, 690.0)
 
@@ -50,29 +49,22 @@ def keypoints(confidences):
     return [(c, 150.0, 100.0 + 10.0 * i) for i, c in enumerate(confidences)]
 
 
-def person_keypoints(conf=0.9, count=12):
-    """Build a body: `count` confident joints, including a full torso."""
+def joints_keypoints(found):
+    """Build keypoints with the given ``{joint: confidence}`` found, the rest not."""
     confidences = [0.05] * NUM_KEYPOINTS
-    torso = [LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP]
-    for index in torso:
-        confidences[index] = conf
-    remaining = [i for i in range(NUM_KEYPOINTS) if i not in torso]
-    for index in remaining[: max(0, count - len(torso))]:
+    for index, conf in found.items():
         confidences[index] = conf
     return keypoints(confidences)
+
+
+def person_keypoints(conf=0.9, count=12):
+    """Build a body: `count` confident joints."""
+    return keypoints([conf] * count + [0.05] * (NUM_KEYPOINTS - count))
 
 
 def prop_keypoints():
     """Build a bean bag: nothing is placed anywhere with any confidence."""
     return keypoints([0.12] * NUM_KEYPOINTS)
-
-
-def legs_keypoints(conf=0.9, joints=(LEFT_KNEE, RIGHT_KNEE, LEFT_ANKLE, RIGHT_ANKLE)):
-    """Build what is left of a person standing too close for their torso."""
-    confidences = [0.05] * NUM_KEYPOINTS
-    for index in joints:
-        confidences[index] = conf
-    return keypoints(confidences)
 
 
 def evidence_for(kpts, box_conf, box=PERSON_BOX, image_height=0.0):
@@ -83,16 +75,22 @@ def evidence_for(kpts, box_conf, box=PERSON_BOX, image_height=0.0):
     )
 
 
-def near_evidence(kpts, box_conf=0.7, box=NEAR_BOX):
-    """Evidence for a detection the close-range branch will pick up."""
-    return evidence_for(kpts, box_conf, box=box, image_height=IMAGE_HEIGHT)
+def frame_evidence(kpts, box_conf, box):
+    """Evidence for a box in a 720p frame, so the close-range label can apply."""
+    return evidence_for(kpts, box_conf, box, IMAGE_HEIGHT)
 
 
 class TestEvidence:
     def test_counts_only_keypoints_above_the_visibility_threshold(self):
         ev = evidence_for(person_keypoints(conf=0.9, count=12), 0.8)
         assert ev.valid_keypoints == 12
-        assert ev.torso_keypoints == 4
+        assert ev.best_keypoint_conf == pytest.approx(0.9)
+
+    def test_a_nan_confidence_is_not_a_joint(self):
+        kpts = joints_keypoints({NOSE: 0.9})
+        kpts[LEFT_EYE] = (float("nan"), 0.0, 0.0)
+        ev = evidence_for(kpts, 0.8)
+        assert ev.valid_keypoints == 1
         assert ev.best_keypoint_conf == pytest.approx(0.9)
 
     def test_aspect_ratio_of_a_degenerate_box_is_not_a_division_error(self):
@@ -105,7 +103,7 @@ class TestAcquireGate:
         passed, reason = check_evidence(
             evidence_for(person_keypoints(), 0.9), CONFIG, strict=True
         )
-        assert passed, reason
+        assert (passed, reason) == (True, "ok")
 
     def test_prop_with_a_high_box_score_is_rejected_on_keypoints(self):
         # This is the bean bag case: the detector is *sure* it is a person, but
@@ -116,29 +114,50 @@ class TestAcquireGate:
         assert not passed
         assert "keypoints" in reason
 
-    def test_torso_is_required_even_when_enough_joints_are_found(self):
-        # An occluder can pick up scattered limb-like keypoints; what it does
-        # not produce is a consistent shoulder/hip rectangle.
-        confidences = [0.9] * NUM_KEYPOINTS
-        for index in (LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP):
-            confidences[index] = 0.05
+    def test_joints_placed_unsurely_are_not_enough(self):
+        # Joints over the visibility threshold, none of them convincing.
         passed, reason = check_evidence(
-            evidence_for(keypoints(confidences), 0.9), CONFIG, strict=True
+            evidence_for(person_keypoints(conf=0.4, count=8), 0.9), CONFIG, strict=True
         )
         assert not passed
-        assert "torso" in reason
+        assert "weak-pose" in reason
 
-    def test_squat_box_is_rejected(self):
-        wide_box = (100.0, 50.0, 600.0, 250.0)  # 500x200, wider than tall
+    def test_one_convincing_joint_is_not_enough_on_its_own(self):
+        one = joints_keypoints({LEFT_KNEE: 0.99})
+        passed, reason = check_evidence(evidence_for(one, 0.9), CONFIG, strict=True)
+        assert not passed
+        assert reason == "keypoints 1<2"
+
+    def test_which_joints_they_are_does_not_matter(self):
+        # A torso, a pair of legs, a face, an arm: the same verdict for each.
+        for found in (
+            {LEFT_SHOULDER: 0.9, RIGHT_SHOULDER: 0.9},
+            {LEFT_KNEE: 0.9, RIGHT_ANKLE: 0.9},
+            {NOSE: 0.9, LEFT_EYE: 0.9},
+            {LEFT_SHOULDER: 0.9, LEFT_ELBOW: 0.9},
+        ):
+            ev = evidence_for(joints_keypoints(found), 0.6)
+            assert check_evidence(ev, CONFIG, strict=True) == (True, "ok"), found
+
+    def test_a_box_far_wider_than_tall_is_rejected(self):
+        wide_box = (100.0, 300.0, 700.0, 400.0)  # 600x100
         passed, reason = check_evidence(
             evidence_for(person_keypoints(), 0.9, box=wide_box), CONFIG, strict=True
         )
         assert not passed
         assert "box-shape" in reason
 
+    def test_a_sliver_is_rejected(self):
+        sliver = (100.0, 50.0, 120.0, 80.0)
+        passed, reason = check_evidence(
+            evidence_for(person_keypoints(), 0.9, box=sliver), CONFIG, strict=True
+        )
+        assert not passed
+        assert "box-height" in reason
+
     def test_low_box_confidence_is_rejected(self):
         passed, reason = check_evidence(
-            evidence_for(person_keypoints(), 0.4), CONFIG, strict=True
+            evidence_for(person_keypoints(), 0.35), CONFIG, strict=True
         )
         assert not passed
         assert "box-conf" in reason
@@ -148,7 +167,7 @@ class TestRetainGate:
     def test_partly_occluded_person_fails_acquire_but_passes_retain(self):
         # The reason hysteresis exists: someone who turns away or steps behind
         # an obstacle scores below the acquire gate, and should not be dropped.
-        ev = evidence_for(person_keypoints(conf=0.55, count=4), 0.45)
+        ev = evidence_for(person_keypoints(conf=0.45, count=3), 0.35)
         assert not check_evidence(ev, CONFIG, strict=True)[0]
         assert check_evidence(ev, CONFIG, strict=False)[0]
 
@@ -157,185 +176,123 @@ class TestRetainGate:
         assert not check_evidence(ev, CONFIG, strict=False)[0]
 
 
-class TestCloseRange:
-    """The person-standing-next-to-the-robot case.
+class TestThePilot:
+    """
+    The 2026-10-16 leading pilot: people lost with the head tilted up.
 
-    The camera is on the head at roughly 0.2 m, so from about three metres in
-    the torso is above the top of the frame and only the legs are left. These
-    tests pin down that such a person is still detected, and that relaxing the
-    torso requirement to get them does not also admit a prop.
+    Every case is read off a debug frame the old gate rejected
+    (``bag_debug/rosbag2_2026_10_16-*``), boxes in 1280x720 pixels. The old
+    gate asked for a torso far away and legs close up; the camera, tilted up,
+    showed chest and arms close up and head and shoulders further off.
     """
 
-    def test_geometry_decides_what_counts_as_close(self):
-        assert is_close_range(near_evidence(legs_keypoints()), CONFIG)
-        # Same detection, but the box sits in the middle of the frame: the body
-        # ends inside the field of view, so it is not a cropped near body.
-        mid_box = (400.0, 120.0, 700.0, 600.0)
-        assert not is_close_range(
-            evidence_for(legs_keypoints(), 0.7, mid_box, IMAGE_HEIGHT), CONFIG
-        )
-        # Top-clipped but small: something in the distance, not up close.
-        short_box = (400.0, 0.0, 700.0, 300.0)
-        assert not is_close_range(
-            evidence_for(legs_keypoints(), 0.7, short_box, IMAGE_HEIGHT), CONFIG
-        )
-
-    def test_frame_height_is_needed_to_judge_proximity(self):
-        # Without it there is no way to tell a cropped body from a whole one,
-        # so the detection is judged on the ordinary gate.
-        assert not is_close_range(evidence_for(legs_keypoints(), 0.7), CONFIG)
-
-    def test_legs_only_person_is_rejected_by_the_ordinary_gate(self):
-        # This is the bug the close-range branch exists for: nothing is wrong
-        # with the detection, the torso is simply not in the picture.
-        passed, reason = check_evidence(
-            evidence_for(legs_keypoints(), 0.7), CONFIG, strict=True
-        )
-        assert not passed
-        assert "torso" in reason
-
-    def test_legs_only_person_is_acquired_when_the_box_says_close(self):
-        passed, reason = check_evidence(
-            near_evidence(legs_keypoints()), CONFIG, strict=True
-        )
-        assert passed, reason
-        assert reason == "near-ok"
-
-    def test_one_leg_is_enough_to_retain_but_not_to_acquire(self):
-        # Half a stride, or one leg behind the other: two joints on one leg.
-        one_leg = near_evidence(legs_keypoints(joints=(LEFT_KNEE,)), box_conf=0.4)
-        assert not check_evidence(one_leg, CONFIG, strict=True)[0]
-        assert check_evidence(one_leg, CONFIG, strict=False)[0]
-
-    def test_frame_filling_prop_is_still_rejected(self):
-        # A wall panel pushed up against the camera has exactly the geometry
-        # the close-range branch looks for -- and no leg to show for it.
-        passed, reason = check_evidence(
-            near_evidence(prop_keypoints(), box_conf=0.95), CONFIG, strict=True
-        )
-        assert not passed
-        assert reason.startswith("near-")
-        assert "keypoints" in reason
-
-    def test_hips_alone_satisfy_the_lower_body_requirement(self):
-        # At the far edge of the close-range band the hips are the lowest part
-        # of the torso still in frame, and they count as lower body.
-        hips = near_evidence(legs_keypoints(joints=(LEFT_HIP, RIGHT_HIP)))
-        assert check_evidence(hips, CONFIG, strict=True)[0]
-
-    def test_wide_leg_box_is_allowed_only_at_close_range(self):
-        # Legs a metre from the lens are wide relative to the slice of them
-        # that fits in the frame; the standing-person shape check would reject
-        # the same box at a distance.
-        wide = (100.0, 0.0, 1500.0, 700.0)  # 1400x700, ratio 2.0
-        assert check_evidence(
-            evidence_for(legs_keypoints(), 0.7, wide, IMAGE_HEIGHT), CONFIG, strict=True
-        )[0]
-        assert not check_evidence(
-            evidence_for(person_keypoints(), 0.9, wide), CONFIG, strict=True
-        )[0]
-
-    def test_branch_can_be_switched_off(self):
-        cfg = GateConfig(proximity_enabled=False)
-        assert not is_close_range(near_evidence(legs_keypoints()), cfg)
-        assert not check_evidence(near_evidence(legs_keypoints()), cfg, strict=True)[0]
-
-    def test_close_person_is_confirmed_and_published(self):
-        confirmer = DetectionConfirmer(CONFIG)
-        candidate = (NEAR_BOX, near_evidence(legs_keypoints()))
-        assert confirmer.update([candidate], 0.0)[0][0] is False  # unconfirmed
-        assert confirmer.update([candidate], 0.1)[0] == (True, "near-ok")
-
-    def test_person_walking_towards_the_robot_keeps_its_track(self):
-        # Whole body at a distance, then legs only as they arrive: the branch
-        # changes underneath the track, which must not restart it.
-        confirmer = DetectionConfirmer(CONFIG)
-        far = (NEAR_BOX, evidence_for(person_keypoints(), 0.9, NEAR_BOX))
-        confirmer.update([far], 0.0)
-        assert confirmer.update([far], 0.1)[0][0] is True
-
-        near = (NEAR_BOX, near_evidence(legs_keypoints()))
-        assert confirmer.update([near], 0.2)[0][0] is True
-        assert confirmer.track_count == 1
-
-
-class TestLooseClothing:
-    """The long-skirt case: a close body whose box does not reach the top edge.
-
-    Every box here is measured off a debug frame the detector rejected. The
-    network draws the box round the body it recognised, and a wide skirt is not
-    recognised as body, so the top edge lands well inside the frame even though
-    the legs below it fill the picture. The old absolute 8 px tolerance could
-    not be met, the detection was judged by the full-body gate, and it was
-    thrown out for a torso that was never in shot -- which is the same shape of
-    error a chair under a long tablecloth would produce.
-    """
-
-    # box_top, box_height, box_conf, the joints found and their confidence.
-    # 0.90 of a 720 frame, starting 48 px down.
-    SKIRT_BOX = (140.0, 48.0, 770.0, 693.0)
-
-    def test_box_that_misses_the_top_edge_is_still_close_range(self):
-        ev = evidence_for(legs_keypoints(), 0.84, self.SKIRT_BOX, IMAGE_HEIGHT)
-        assert ev.box_top > CONFIG.proximity_top_margin
+    def test_close_person_framed_by_chest_and_arms(self):
+        # Box 0.84 filling the frame's height, a shoulder at 0.82 and an elbow
+        # at 0.98: rejected as "near-legs 0<2".
+        kpts = joints_keypoints({LEFT_SHOULDER: 0.82, LEFT_ELBOW: 0.98})
+        ev = frame_evidence(kpts, 0.84, (0.0, 0.0, 220.0, 720.0))
+        assert check_evidence(ev, CONFIG, strict=True) == (True, "ok")
         assert is_close_range(ev, CONFIG)
 
-    def test_three_leg_joints_and_a_good_box_are_acquired(self):
-        # Screenshot: box 0.84, knee and both ankles at ~0.99, rejected as
-        # "keypoints 3<6" -- the full-body count, on a body with no torso in
-        # frame.
-        legs = legs_keypoints(conf=0.99, joints=(LEFT_KNEE, LEFT_ANKLE, RIGHT_ANKLE))
-        passed, reason = check_evidence(
-            evidence_for(legs, 0.84, self.SKIRT_BOX, IMAGE_HEIGHT),
-            CONFIG,
-            strict=True,
+    def test_head_and_shoulders_cut_off_by_the_bottom_edge(self):
+        # Box 0.47, the face at 0.89-0.95, a shoulder at 0.35, the box 3.3
+        # times wider than tall: rejected as "box-conf 0.47<=0.60".
+        kpts = joints_keypoints(
+            {NOSE: 0.94, LEFT_EYE: 0.89, RIGHT_EYE: 0.95, LEFT_SHOULDER: 0.35}
         )
-        assert passed, reason
-        assert reason == "near-ok"
+        ev = frame_evidence(kpts, 0.47, (760.0, 586.0, 1200.0, 720.0))
+        assert check_evidence(ev, CONFIG, strict=True) == (True, "ok")
+        assert not is_close_range(ev, CONFIG)
 
-    def test_bare_legs_at_low_box_confidence_are_acquired(self):
-        # Screenshot: box 0.44 with a knee at 0.55 and an ankle at 0.33. The
-        # close-range branch did fire; the acquire thresholds were the ones
-        # written for a whole body, so it was rejected at "0.44<=0.50".
-        kpts = keypoints([0.05] * NUM_KEYPOINTS)
-        kpts[LEFT_KNEE] = (0.55, 500.0, 300.0)
-        kpts[LEFT_ANKLE] = (0.33, 500.0, 640.0)
-        passed, reason = check_evidence(
-            near_evidence(kpts, box_conf=0.44), CONFIG, strict=True
+    def test_a_squarer_head_and_shoulders_box(self):
+        # Box 0.54, face at 0.77-1.00 and a shoulder at 1.00.
+        kpts = joints_keypoints(
+            {NOSE: 0.99, LEFT_EYE: 1.0, RIGHT_EYE: 1.0, LEFT_EAR: 0.77,
+             RIGHT_SHOULDER: 1.0}
         )
-        assert passed, reason
+        ev = frame_evidence(kpts, 0.54, (552.0, 440.0, 944.0, 720.0))
+        assert check_evidence(ev, CONFIG, strict=True) == (True, "ok")
+
+    def test_a_weak_box_is_kept_but_not_acquired(self):
+        # Box 0.32 with the face at 0.39-0.86: under the acquire threshold, but
+        # a person already being followed is not dropped on it.
+        kpts = joints_keypoints(
+            {NOSE: 0.55, LEFT_EYE: 0.85, RIGHT_EYE: 0.86, RIGHT_EAR: 0.39}
+        )
+        ev = frame_evidence(kpts, 0.32, (974.0, 600.0, 1100.0, 720.0))
+        assert not check_evidence(ev, CONFIG, strict=True)[0]
+        assert check_evidence(ev, CONFIG, strict=False)[0]
+
+    def test_legs_in_a_long_skirt(self):
+        # 2026-09: box 0.84, a knee and both ankles at ~0.99, rejected as
+        # "keypoints 3<6" by the whole-body count.
+        kpts = joints_keypoints({LEFT_KNEE: 0.99, LEFT_ANKLE: 0.99, RIGHT_ANKLE: 0.99})
+        ev = frame_evidence(kpts, 0.84, (140.0, 48.0, 770.0, 693.0))
+        assert check_evidence(ev, CONFIG, strict=True) == (True, "ok")
+
+    def test_bare_legs_at_a_low_box_score(self):
+        # Box 0.44, a knee at 0.55 and an ankle at 0.33.
+        kpts = joints_keypoints({LEFT_KNEE: 0.55, LEFT_ANKLE: 0.33})
+        ev = frame_evidence(kpts, 0.44, NEAR_BOX)
+        assert check_evidence(ev, CONFIG, strict=True)[0]
+
+    def test_props_with_the_same_boxes_are_still_rejected(self):
+        # A wall panel against the camera, a tablecloth over a chair, a bean
+        # bag at the bottom of the frame: the geometry of each case above, and
+        # no joint to show for it.
+        for box in (
+            (0.0, 0.0, 220.0, 720.0),
+            (760.0, 586.0, 1200.0, 720.0),
+            (140.0, 48.0, 770.0, 693.0),
+            NEAR_BOX,
+        ):
+            ev = frame_evidence(prop_keypoints(), 0.95, box)
+            assert not check_evidence(ev, CONFIG, strict=True)[0], box
+            assert not check_evidence(ev, CONFIG, strict=False)[0], box
+
+
+class TestCloseRangeLabel:
+    """The geometry that still labels a detection ``close_range``."""
+
+    def test_a_box_from_the_top_edge_filling_the_frame_is_close(self):
+        assert is_close_range(frame_evidence(person_keypoints(), 0.7, NEAR_BOX), CONFIG)
+
+    def test_a_box_in_the_middle_of_the_frame_is_not(self):
+        mid_box = (400.0, 120.0, 700.0, 600.0)
+        assert not is_close_range(
+            frame_evidence(person_keypoints(), 0.7, mid_box), CONFIG
+        )
+
+    def test_a_short_box_at_the_top_edge_is_not(self):
+        short_box = (400.0, 0.0, 700.0, 300.0)
+        assert not is_close_range(
+            frame_evidence(person_keypoints(), 0.7, short_box), CONFIG
+        )
+
+    def test_a_box_that_misses_the_top_edge_by_a_skirt_is_close(self):
+        assert is_close_range(
+            frame_evidence(person_keypoints(), 0.8, (140.0, 48.0, 770.0, 693.0)),
+            CONFIG,
+        )
 
     def test_a_box_filling_the_frame_is_close_wherever_its_top_sits(self):
-        # Past the fractional margin as well: only the dominant-height branch
-        # can carry this one.
         deep = (140.0, 150.0, 770.0, 715.0)  # 0.785 of the frame, top 150 px
-        ev = evidence_for(legs_keypoints(), 0.8, deep, IMAGE_HEIGHT)
-        assert not is_close_range(ev, CONFIG)
+        assert not is_close_range(frame_evidence(person_keypoints(), 0.8, deep), CONFIG)
         tall = (140.0, 80.0, 770.0, 715.0)  # 0.88 of the frame, top 80 px
-        assert is_close_range(
-            evidence_for(legs_keypoints(), 0.8, tall, IMAGE_HEIGHT), CONFIG
-        )
+        assert is_close_range(frame_evidence(person_keypoints(), 0.8, tall), CONFIG)
 
-    def test_the_relaxation_still_keeps_a_tablecloth_out(self):
-        # The point of the whole exercise: a frame-filling object whose top
-        # edge is inside the frame now reaches the close-range gate, so that
-        # gate is the only thing between a draped chair and a person. It holds,
-        # because the network places no leg on a tablecloth.
-        passed, reason = check_evidence(
-            evidence_for(prop_keypoints(), 0.95, self.SKIRT_BOX, IMAGE_HEIGHT),
-            CONFIG,
-            strict=True,
-        )
-        assert not passed
-        assert reason.startswith("near-")
+    def test_frame_height_is_needed(self):
+        assert not is_close_range(evidence_for(person_keypoints(), 0.7, NEAR_BOX), CONFIG)
 
-    def test_one_convincing_joint_is_not_enough_on_its_own(self):
-        # A single leg joint clears the confidence bar but not the count: two
-        # of the six hip/knee/ankle joints are required to acquire.
-        one = legs_keypoints(conf=0.99, joints=(LEFT_KNEE,))
-        assert not check_evidence(
-            evidence_for(one, 0.84, self.SKIRT_BOX, IMAGE_HEIGHT), CONFIG, strict=True
-        )[0]
+    def test_the_label_can_be_switched_off(self):
+        cfg = GateConfig(proximity_enabled=False)
+        assert not is_close_range(frame_evidence(person_keypoints(), 0.7, NEAR_BOX), cfg)
+
+    def test_the_label_does_not_change_the_verdict(self):
+        kpts = joints_keypoints({LEFT_KNEE: 0.9, RIGHT_ANKLE: 0.9})
+        near = frame_evidence(kpts, 0.6, NEAR_BOX)
+        far = evidence_for(kpts, 0.6)
+        assert check_evidence(near, CONFIG, True) == check_evidence(far, CONFIG, True)
 
 
 class TestIou:
@@ -379,7 +336,7 @@ class TestConfirmer:
         assert confirmer.update([self.person()], 0.1)[0][0] is True
 
         # Same person, now half occluded: below acquire, above retain.
-        weak = (PERSON_BOX, evidence_for(person_keypoints(0.55, 4), 0.45))
+        weak = (PERSON_BOX, evidence_for(person_keypoints(0.45, 3), 0.35))
         assert confirmer.update([weak], 0.2)[0][0] is True
 
     def test_confirmation_is_lost_after_a_long_dropout(self):
@@ -391,7 +348,7 @@ class TestConfirmer:
         # track has expired, so retain no longer applies and it must be
         # re-acquired on the strict gate.
         confirmer.update([], 0.2)
-        weak = (PERSON_BOX, evidence_for(person_keypoints(0.55, 4), 0.45))
+        weak = (PERSON_BOX, evidence_for(person_keypoints(0.45, 3), 0.35))
         assert confirmer.update([weak], 1.0)[0][0] is False
 
     def test_track_is_kept_across_a_short_dropout(self):
@@ -400,7 +357,7 @@ class TestConfirmer:
         confirmer.update([self.person()], 0.1)
         confirmer.update([], 0.2)  # one frame with nothing detected
 
-        weak = (PERSON_BOX, evidence_for(person_keypoints(0.55, 4), 0.45))
+        weak = (PERSON_BOX, evidence_for(person_keypoints(0.45, 3), 0.35))
         assert confirmer.update([weak], 0.3)[0][0] is True
 
     def test_moving_person_stays_associated(self):
