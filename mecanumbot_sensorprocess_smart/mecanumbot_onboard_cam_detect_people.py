@@ -35,15 +35,9 @@ from mecanumbot_sensorprocess_smart.person_gating import (
     evaluate_evidence,
     head_at_bottom,
     is_close_range,
+    TYPE_CLOSE_RANGE,
+    TYPE_FULL_BODY,
 )
-
-# `CamPersonDetection.type`: how much of the body the detection is based on.
-# Close to the robot the camera frames only part of the body -- the legs with
-# the head level, chest and arms with it tilted up -- so a consumer that needs
-# a particular part -- the ostensive tree reading gestures, for instance -- has
-# to be able to tell that the rest is outside the frame, not undetected.
-TYPE_FULL_BODY = "full_body"
-TYPE_CLOSE_RANGE = "close_range"
 
 # PersonKeypoints declares its 17 Pose fields in COCO-17 order, which is the
 # order the pose parser emits them in, so the two are filled by zipping.
@@ -133,6 +127,7 @@ class DeepStreamPersonDetectNode(Node):
                 ("detection_gate.proximity_top_margin", 8.0),
                 ("detection_gate.proximity_top_fraction", 0.08),
                 ("detection_gate.proximity_dominant_height_fraction", 0.85),
+                ("detection_gate.close_range_retain", False),
                 ("detection_gate.min_hits", 2),
                 ("detection_gate.max_missed_time", 0.5),
                 ("detection_gate.iou_threshold", 0.3),
@@ -423,6 +418,7 @@ class DeepStreamPersonDetectNode(Node):
             proximity_dominant_height_fraction=float(
                 gate("proximity_dominant_height_fraction")
             ),
+            close_range_retain=bool(gate("close_range_retain")),
             min_hits=int(gate("min_hits")),
             max_missed_time=float(gate("max_missed_time")),
             iou_threshold=float(gate("iou_threshold")),

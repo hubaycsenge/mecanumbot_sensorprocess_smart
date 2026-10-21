@@ -20,6 +20,13 @@
     # with that value would have cut the fusion off from the LiDAR detector.
     detections_topic: dets
     rviz_topic: dets_marker
+    # Whether to publish `subject_pose`, the DR-SPAAM detection nearest the
+    # robot. Off on the robot since 2026-10-21: the trees read the person off
+    # people_fusion alone, and on the LD08 DR-SPAAM finds somebody in ~1 % of
+    # scans, so the topic was mostly silent and, when not, as often a table leg.
+    # The simulator turns it back on (sim.launch.py), where its
+    # oracle supplies the ground truth on the same topic.
+    leading_mode: false
 
     # ---- GPU load control (Jetson Orin Nano) ----
     # stride subsamples the cutout centres fed to the network: 2 halves the
@@ -27,8 +34,8 @@
     # Set back to 1 for the original (heavier) sampling density.
     stride: 2
     # Cap how often DR-SPAAM actually runs, independent of the LiDAR rate. The
-    # Kalman tracker extrapolates the scans in between, so `dets` and
-    # `subject_pose` still update at full scan rate. 0.0 disables the cap.
+    # Kalman tracker extrapolates the scans in between, so `dets` still
+    # updates at full scan rate. 0.0 disables the cap.
     max_inference_rate: 5.0
     publish_on_skipped_scans: true
     # FP16 autocast for the convolutions. Validated at start-up; the node falls
@@ -190,6 +197,11 @@
       proximity_top_margin: 8.0
       proximity_top_fraction: 0.08
       proximity_dominant_height_fraction: 0.85
+      # Whether a close_range box may be held on the retain gate. False: it has
+      # to clear the acquire gate in every frame, because any two boxes that
+      # fill the frame overlap past iou_threshold, and a confirmed person kept
+      # every blurred shelf after it "confirmed" at 0.34 (2026-10-21).
+      close_range_retain: false
       # Temporal confirmation: frames a blob must pass the acquire gate before
       # it is published, and how long a confirmed track survives without one.
       min_hits: 2
@@ -245,6 +257,16 @@
     # camera frame being a few hundred ms older than the scan, which on a
     # robot turning at 0.3 rad/s is several degrees more.
     wedge_margin_deg: 4.0
+    # A close_range camera detection (its box runs off the top of the frame)
+    # claims a body near enough to fill the picture. It is used only if a
+    # LiDAR candidate -- person-sized, off the map -- within max_range lies in
+    # its wedge, and dropped otherwise: frame-filling skeletons on plant
+    # shelves blurred by a turn became tracked people the head then looked at
+    # (2026-10-21). 3 m, because with the head lifted a standing adult fills
+    # the 30-degree frame from about there in. Needs clusters.enabled.
+    close_range:
+      require_lidar: true
+      max_range: 3.0
 
     # ---- scan clusters (see scan_clusters.py) ----
     # The scan is cut into surfaces -- runs of neighbouring returns at about

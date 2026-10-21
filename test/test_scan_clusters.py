@@ -20,6 +20,7 @@ from mecanumbot_sensorprocess_smart.scan_clusters import (
     StaticMap,
     candidates,
     choose_for_wedge,
+    corroborates_close_range,
     place_on_structure,
     segment_scan,
     structure_range,
@@ -186,6 +187,22 @@ class TestWedge:
     def test_nothing_in_the_wedge_is_none(self):
         found = candidates(clusters_of(scan(person=(90.0, 4, 2.0))), None, None)
         assert choose_for_wedge(found, math.radians(-10.0), math.radians(10.0)) is None
+
+    def test_a_near_body_backs_up_a_close_range_box(self):
+        found = candidates(clusters_of(scan(legs=(0.0, 8, 0.8))), None, None)
+        low, high = math.radians(-25.0), math.radians(25.0)
+        assert corroborates_close_range(found, low, high, max_range=3.0)
+
+    def test_a_frame_filling_box_on_an_empty_wedge_is_not_backed_up(self):
+        # A blurred plant shelf: only the room in that direction.
+        found = candidates(clusters_of(scan(person=(90.0, 4, 2.0))), None, None)
+        low, high = math.radians(-25.0), math.radians(25.0)
+        assert not corroborates_close_range(found, low, high, max_range=3.0)
+
+    def test_a_far_candidate_does_not_back_up_a_close_range_box(self):
+        found = candidates(clusters_of(scan(person=(0.0, 3, 3.8))), None, None)
+        low, high = math.radians(-25.0), math.radians(25.0)
+        assert not corroborates_close_range(found, low, high, max_range=3.0)
 
     def test_the_fallback_range_is_an_actual_return(self):
         wedge = [1.98, 1.99, 4.25, 4.25, 4.25, 4.25, 4.25]

@@ -52,8 +52,10 @@ camera ─► mecanumbot_onboard_cam_detect_objects ─┬─► cam_people_boxe
 `people_fusion` (`geometry_msgs/PoseArray`, `map` frame) is what the behaviour trees
 in `mecanumbot_behaviours` consume. `ball_detections`
 (`vision_msgs/Detection3DArray`, `map` frame) is the same interface for the ball, and
-is what `mecanumbot_fetch_behaviour` reads. The LiDAR node additionally publishes
-`subject_pose` directly for the leading behaviours. The ROS4HRI topics are a parallel,
+is what `mecanumbot_fetch_behaviour` reads. The LiDAR node can additionally publish
+`subject_pose` (`leading_mode`), but since 2026-10-21 it is off on the robot and the
+leading trees no longer read it: they take the person off `people_fusion`. Only the
+simulator still uses the topic, for its ground-truth oracle. The ROS4HRI topics are a parallel,
 standards-compliant output for external HRI tooling; nothing inside this repository
 consumes them yet.
 
@@ -165,7 +167,7 @@ by either launch file.
 | Topic                                    | Data type                     | Function                                                                                                                                           |
 | ---------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | dets (configurable by detections_topic)  | geometry_msgs/msg/PoseArray   | Publishes filtered and tracked people detections as 2D poses.                                                                                      |
-| subject_pose                             | geometry_msgs/msg/PoseStamped | Publishes the leading subject -- the published track **nearest the robot** -- in the map frame (only when `leading_mode` is enabled). Until 2026-09-21 it was whichever track came first in the list. |
+| subject_pose                             | geometry_msgs/msg/PoseStamped | Publishes the leading subject -- the published track **nearest the robot** -- in the map frame (only when `leading_mode` is enabled -- off on the robot since 2026-10-21, see `leading_mode`). Until 2026-09-21 it was whichever track came first in the list. |
 | dets_marker (configurable by rviz_topic) | visualization_msgs/msg/Marker | RViz LINE_LIST circles around tracked detections. Currently disabled — the publisher is commented out and `publish_rviz` is hard-coded to `False`. |
 
 ### Subscribers
@@ -185,7 +187,7 @@ by either launch file.
 | `scan_topic`                | `/mecanumbot/scan`       | Input laser scan topic.                                                               |
 | `detections_topic`          | `dets`                   | Output detection topic. The fusion node subscribes to it and the trees wait for it before their first tick. (The YAML said `dr_spaam/dets` for as long as it was not being loaded — see *The parameter file* below.) |
 | `rviz_topic`                | `dets_marker`            | Marker topic name (unused while marker publishing is disabled).                       |
-| `leading_mode`              | `true`                   | Enables the `subject_pose` publisher.                                                 |
+| `leading_mode`              | `true` (config: `false`) | Enables the `subject_pose` publisher. The config file turns it off: the trees read `people_fusion` only, and on the LD08 DR-SPAAM finds somebody in ~1 % of scans. `sim.launch.py` turns it back on. |
 | `obstacle_exclusion_radius` | `0.2`                    | Inflation radius in metres applied to the keepout mask.                               |
 | `detection_frame`           | `base_scan`              | Accepts `base_scan` or `map`; anything else falls back to `base_scan` with a warning. |
 | `track_require_motion`      | `true`                   | Only publish a track that has been seen moving. See *Motion, and re-seeding it* below. |
@@ -450,6 +452,7 @@ they do:
 | `proximity_top_margin`                | `8.0`   | Pixels from the top edge within which a box counts as clipped by it; a floor for small frames. |
 | `proximity_top_fraction`              | `0.08`  | The same tolerance as a share of the frame height; the larger of the two wins (58 px at 720p). |
 | `proximity_dominant_height_fraction`  | `0.85`  | A box filling this much of the frame is labelled close whatever its top edge does. |
+| `close_range_retain`                  | `false` | Whether a `close_range` box may be kept on the retain gate. Off: it must clear the acquire gate every frame, because any two frame-filling boxes overlap past `iou_threshold`, so a confirmed person used to carry every blurred shelf after them (2026-10-21, at a box score of 0.34). |
 | `min_hits`                            | `2`     | Frames a blob must pass the acquire gate before anything is published.         |
 | `max_missed_time`                     | `0.5`   | Seconds a confirmed track survives without a detection.                        |
 | `iou_threshold`                       | `0.3`   | Minimum box IoU to associate a detection with an existing track.               |
@@ -879,6 +882,8 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 | `dets_timeout`                      | `0.5`   | The same for the LiDAR detector's last `dets` message, now that the fusion runs on the scan rather than on that message. |
 | `camera_bearing_offset_deg`         | `-7.5`  | Added to every camera bearing before it is looked up in the scan. **Measured** 2026-10-02 from the bags of 2026-09-23..30: the legs the LiDAR sees sit 7.5° clockwise of the bearing the camera gives the same person. See *Ranging a camera detection*. `0.0` switches it off. |
 | `wedge_margin_deg`                  | `4.0`   | Degrees a bearing wedge is widened by on each side when matched against the scan. |
+| `close_range.require_lidar`         | `true`  | A `close_range` camera detection is used only if a LiDAR candidate (person-sized, off the map) lies in its wedge within `close_range.max_range`; otherwise it is dropped and logged. See `scan_clusters.corroborates_close_range`. Needs `clusters.enabled`. |
+| `close_range.max_range`             | `3.0`   | Metres. With the head lifted a standing adult fills the 30° frame from about here in. |
 | `clusters.enabled`                  | `true`  | Cut the scan into clusters. `false` leaves only DR-SPAAM detections and the bare-scan fallback, and publishes no candidates. |
 | `clusters.jump` / `clusters.max_gap` | `0.2` / `1` | Metres two neighbouring returns may differ by and still be one surface; dropped beams bridged between them. |
 | `clusters.min_width` / `clusters.max_width` | `0.10` / `1.2` | Metres. What "person-sized" means: a leg is ~0.12, a person on a bean bag about a metre. |

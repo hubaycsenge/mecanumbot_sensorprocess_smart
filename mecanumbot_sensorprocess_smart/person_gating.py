@@ -73,6 +73,16 @@ RIGHT_ANKLE = 16
 
 NUM_KEYPOINTS = 17
 
+# `CamPersonDetection.type`: how much of the body the detection is based on.
+# Close to the robot the camera frames only part of the body -- the legs with
+# the head level, chest and arms with it tilted up -- so a consumer that needs
+# a particular part -- the ostensive tree reading gestures, for instance -- has
+# to be able to tell that the rest is outside the frame, not undetected. Here
+# rather than in the node so that the fusion can read the label without
+# importing DeepStream.
+TYPE_FULL_BODY = "full_body"
+TYPE_CLOSE_RANGE = "close_range"
+
 
 @dataclass(frozen=True)
 class GateConfig:
@@ -119,6 +129,13 @@ class GateConfig:
     proximity_top_margin: float = 8.0
     proximity_top_fraction: float = 0.08
     proximity_dominant_height_fraction: float = 0.85
+    # Whether a close-range box may be kept on the retain gate. Off: a box
+    # that fills the frame overlaps nearly any other box that fills it by more
+    # than `iou_threshold`, so once one was confirmed, every large blob after
+    # it -- a shelf of plants blurred by a turn, at a box score of 0.34 -- was
+    # "the same person" and held on the loose gate (the 2026-10-21 leading
+    # run). A close-range box has to clear the acquire gate in every frame.
+    close_range_retain: bool = False
 
     # Stage 3: temporal confirmation.
     min_hits: int = 2
@@ -364,6 +381,10 @@ class DetectionConfirmer:
     because the detector runs at camera rate and the number of people in the
     experiment is small.
 
+    A close-range box is the exception to the hysteresis: it is held to the
+    acquire gate every frame unless ``close_range_retain`` is set, because IoU
+    cannot tell two frame-filling boxes apart.
+
     Not thread-safe: it is driven from the DeepStream buffer probe, which is a
     single streaming thread.
     """
@@ -427,7 +448,10 @@ class DetectionConfirmer:
             # that is convincing on its own merits is never held back by a
             # track it happens to overlap.
             passed, reason = check_evidence(evidence, self._cfg, strict=True)
-            if not passed and track is not None and track.confirmed:
+            retainable = self._cfg.close_range_retain or not is_close_range(
+                evidence, self._cfg
+            )
+            if not passed and track is not None and track.confirmed and retainable:
                 passed, reason = check_evidence(evidence, self._cfg, strict=False)
 
             if not passed:

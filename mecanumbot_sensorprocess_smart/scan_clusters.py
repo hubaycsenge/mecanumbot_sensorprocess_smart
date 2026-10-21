@@ -328,6 +328,24 @@ def choose_for_wedge(candidate_clusters, low, high, margin=0.0):
     return min(touching, key=lambda c: (c.offset_from(centre), c.range))
 
 
+def corroborates_close_range(candidate_clusters, low, high, margin=0.0, max_range=3.0):
+    """
+    Say whether the LiDAR backs up a camera detection that fills the frame.
+
+    A ``close_range`` box claims a body so near that it runs off the top of the
+    picture, and that is a claim the scan can check: somewhere in the wedge
+    there has to be a candidate -- person-sized, not the mapped room -- within
+    ``max_range``. A shelf of plants or a chair back that the pose network
+    turned into a frame-filling skeleton has none (the 2026-10-21 leading run),
+    and a person close enough to fill the frame always does, legs and all.
+    The candidate checked is the one :func:`choose_for_wedge` would range the
+    detection by, so a near table leg at the wedge's edge does not vouch for
+    whatever is in the middle of it.
+    """
+    cluster = choose_for_wedge(candidate_clusters, low, high, margin)
+    return cluster is not None and cluster.range <= max_range
+
+
 def structure_range(ranges, quantile=0.2):
     """
     Return a near return among ``ranges`` -- an actual one, never a blend.

@@ -65,6 +65,7 @@ import copy
 from mecanumbot_sensorprocess_smart import ball_locating
 from mecanumbot_sensorprocess_smart import scan_clusters
 from mecanumbot_sensorprocess_smart.scan_wedge import wedge_ranges
+from mecanumbot_sensorprocess_smart.person_gating import TYPE_CLOSE_RANGE
 from mecanumbot_sensorprocess_smart.person_tracking import (
     CameraCoverage,
     PersonTracker,
@@ -113,6 +114,11 @@ class PersonLocateNode(Node):
         # 2.5 deg, and the camera frame is a few hundred ms older than the scan,
         # which on a robot turning at 0.3 rad/s is several degrees more.
         self.declare_parameter("wedge_margin_deg", 4.0)
+        # A camera detection labelled close_range (its box runs off the top of
+        # the frame) is only used if a LiDAR candidate within `max_range` lies
+        # in its wedge; see scan_clusters.corroborates_close_range.
+        self.declare_parameter("close_range.require_lidar", True)
+        self.declare_parameter("close_range.max_range", 3.0)
         # ---- scan clusters (see scan_clusters.py) ----
         self.declare_parameter("clusters.enabled", True)
         # Metres two neighbouring returns may differ by and still be one surface.
@@ -331,6 +337,12 @@ class PersonLocateNode(Node):
         )
         self.wedge_margin = math.radians(
             float(self.get_parameter("wedge_margin_deg").value)
+        )
+        self.close_range_require_lidar = bool(
+            self.get_parameter("close_range.require_lidar").value
+        )
+        self.close_range_max_range = float(
+            self.get_parameter("close_range.max_range").value
         )
         self.clusters_enabled = bool(self.get_parameter("clusters.enabled").value)
         self.cluster_jump = float(self.get_parameter("clusters.jump").value)
@@ -897,7 +909,9 @@ class PersonLocateNode(Node):
         self.candidates_pub.publish(message)
         return [(p.position.x, p.position.y) for p in message.poses]
 
-    def _locate_from_bearing(self, ang_min, ang_max, candidates, transform):
+    def _locate_from_bearing(
+        self, ang_min, ang_max, candidates, transform, close_range=False
+    ):
         """
         Place a camera bearing wedge in the map, or return None.
 
@@ -909,9 +923,27 @@ class PersonLocateNode(Node):
 
         The bounds are the camera's own; `camera_bearing_offset` brings them
         into the LiDAR's frame here, once, for all three.
+
+        A `close_range` detection is dropped, None, unless a candidate in the
+        wedge is near enough to be the body that fills the frame.
         """
         low = min(ang_min, ang_max) + self.camera_bearing_offset
         high = max(ang_min, ang_max) + self.camera_bearing_offset
+
+        if (
+            close_range
+            and self.close_range_require_lidar
+            and self.clusters_enabled
+            and not scan_clusters.corroborates_close_range(
+                candidates, low, high, self.wedge_margin, self.close_range_max_range
+            )
+        ):
+            self.get_logger().info(
+                "Dropped a close_range camera detection: no LiDAR candidate "
+                f"within {self.close_range_max_range:.1f} m in its wedge",
+                throttle_duration_sec=2.0,
+            )
+            return None
 
         person_pose = self.arrange_with_scan_dets(low, high)
         if person_pose is not None:
@@ -935,8 +967,9 @@ class PersonLocateNode(Node):
         """
         Return every fresh camera bearing wedge, from either detector.
 
-        A wedge is `(min, max)` in radians in the robot's frame, positive to the
-        left, which is what the LiDAR lookup wants. The pose detector supplies
+        A wedge is `(min, max, close_range)`, the bounds in radians in the
+        robot's frame, positive to the left, which is what the LiDAR lookup
+        wants. Only the pose detector labels a detection close_range. The pose detector supplies
         them ready-made on `cam_people_detections`; the fetch detector supplies
         boxes and they are computed here from the lens. Both are staleness
         checked against the same timeout: a bearing from a frame that is seconds
@@ -948,7 +981,11 @@ class PersonLocateNode(Node):
         if self._camera_is_fresh():
             for person in self.cam_detections:
                 wedges.append(
-                    (person.bound_angle_min.data, person.bound_angle_max.data)
+                    (
+                        person.bound_angle_min.data,
+                        person.bound_angle_max.data,
+                        person.type.data == TYPE_CLOSE_RANGE,
+                    )
                 )
         if self._boxes_are_fresh(self.person_boxes_time):
             for box in self.person_boxes:
@@ -957,6 +994,7 @@ class PersonLocateNode(Node):
                     (
                         self.camera.bearing(centre_u + width / 2.0),
                         self.camera.bearing(centre_u - width / 2.0),
+                        False,
                     )
                 )
         return wedges
@@ -984,8 +1022,10 @@ class PersonLocateNode(Node):
         )
 
         camera_points = []
-        for ang_min, ang_max in self._camera_wedges():
-            placed = self._locate_from_bearing(ang_min, ang_max, candidates, transform)
+        for ang_min, ang_max, close_range in self._camera_wedges():
+            placed = self._locate_from_bearing(
+                ang_min, ang_max, candidates, transform, close_range
+            )
             if placed is not None:
                 camera_points.append(placed)
             if self.debug_mode:

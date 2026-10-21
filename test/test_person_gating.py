@@ -386,6 +386,38 @@ class TestConfirmer:
         confirmer.update([self.person()], 0.1)
         assert confirmer.update([self.prop()], 0.2)[0][0] is False
 
+    def near(self, box_conf, conf=0.9, count=8):
+        return (NEAR_BOX, frame_evidence(person_keypoints(conf, count), box_conf, NEAR_BOX))
+
+    def test_a_weak_frame_filling_box_is_not_held_on_retain(self):
+        # The 2026-10-21 run: legs close up confirmed, then a shelf of plants
+        # blurred by a turn filled the frame at 0.34 and, overlapping the legs'
+        # box like any two frame-filling boxes do, was kept as the same person.
+        confirmer = DetectionConfirmer(CONFIG)
+        confirmer.update([self.near(0.6)], 0.0)
+        assert confirmer.update([self.near(0.6)], 0.1)[0][0] is True
+        weak = self.near(0.34, conf=0.45, count=3)
+        assert is_close_range(weak[1], CONFIG)
+        assert confirmer.update([weak], 0.2)[0][0] is False
+
+    def test_a_frame_filling_box_on_the_acquire_gate_is_still_kept(self):
+        confirmer = DetectionConfirmer(CONFIG)
+        confirmer.update([self.near(0.6)], 0.0)
+        confirmer.update([self.near(0.6)], 0.1)
+        assert confirmer.update([self.near(0.45)], 0.2)[0][0] is True
+
+    def test_close_range_retain_brings_the_hysteresis_back(self):
+        cfg = GateConfig(close_range_retain=True)
+        confirmer = DetectionConfirmer(cfg)
+        near = (NEAR_BOX, evidence_for(person_keypoints(0.9, 8), 0.6, NEAR_BOX, IMAGE_HEIGHT))
+        confirmer.update([near], 0.0)
+        confirmer.update([near], 0.1)
+        weak = (
+            NEAR_BOX,
+            evidence_for(person_keypoints(0.45, 3), 0.34, NEAR_BOX, IMAGE_HEIGHT),
+        )
+        assert confirmer.update([weak], 0.2)[0][0] is True
+
 
 # --- the look-down cue -----------------------------------------------------
 
