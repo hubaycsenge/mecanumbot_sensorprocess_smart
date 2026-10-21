@@ -178,8 +178,9 @@ class NeckMount:
     `level_ticks` is the trees' `neck_level_pos` (6.0 board units, scaled by
     100 on the way to the servo), `rad_per_tick` is the constant
     `mecanumbot_sensorproc_node` uses for the same servo, and
-    **`pitch_at_level` is unmeasured**: nothing establishes that the neutral
-    driving gaze is optically level. `floor_pitch` is how to measure it.
+    `pitch_at_level` is 27.5 deg: the camera looks level at ~505 ticks
+    (2026-10-21; the 2026-09-15 fit had 4.7). `floor_pitch` is how to
+    re-measure it.
 
     `ticks` is the neck's *goal*. The firmware echoes the last command back as
     `OpenCRState.pos_n` and never reads the AX-12A's present position, so while
@@ -192,7 +193,7 @@ class NeckMount:
     lever_z: float = 0.0545
     level_ticks: float = 600.0
     rad_per_tick: float = 0.005061
-    pitch_at_level: float = 0.0
+    pitch_at_level: float = math.radians(27.5)
     # Beyond this a reading is not a head position. The board reports 0 before
     # its first command, which is -174 degrees here, and that is the case this
     # is for; the neck's own 200..860 stays inside it.

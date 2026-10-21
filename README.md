@@ -930,7 +930,7 @@ python3 build_engine.py imgsz_640/yolo26m.onnx
 | `ball.neck.topic` / `ball.neck.stale_s` | `opencr_state` / `0.5` | Where the neck position comes from, and how far behind a frame it may be [s]. |
 | `ball.neck.pivot_x` / `_z`, `ball.neck.lever_x` / `_z` | `0.1063` / `0.1679`, `0.022` / `0.038` | The neck pivot and the pivot-to-lens lever in the base frame [m]. |
 | `ball.neck.level_ticks` / `ball.neck.rad_per_tick` | `600.0` / `0.005061` | Servo ticks of the trees' `neck_level_pos`, and tilt per tick. |
-| `ball.neck.pitch_at_level_deg`      | `4.7`   | **Measured** 2026-09-15. Lens tilt at `level_ticks`, positive up: the camera is level at ~584 ticks. |
+| `ball.neck.pitch_at_level_deg`      | `27.5`  | **Measured** 2026-10-21. Lens tilt at `level_ticks`, positive up: the camera is level at ~505 ticks (4.7, level at ~584, from 2026-09-15 until the head moved on its servo). |
 | `ball.tracking.*`                   | — | Alpha-beta smoothing in the map frame; see `ball_locating.py`. |
 | `person_boxes.enabled`              | `true`  | Accept person evidence from the fetch detector as well as the pose one. |
 | `person_boxes.topic`                | `cam_people_boxes` | Where those boxes come from. |
@@ -1139,6 +1139,13 @@ frame that has no neck reading within `ball.neck.stale_s`. Two things to know:
   Frames with the ball near the top or bottom edge came out a few degrees flatter,
   which is lens distortion the pinhole model ignores; only boxes well inside the frame
   were used.
+  **Superseded 2026-10-21:** the head had moved on its servo since. A ball on the floor
+  1 m out with the neck at 500 gave −1.8° by its size and −1.2° by its known distance,
+  so the camera is now level at **~505 ticks** and `pitch_at_level_deg` is **27.5**.
+  The 2026-09-30 bags still match the old number, so the shift happened after them.
+  The C270's specified 55° is *diagonal*, which is 48.8° horizontal at 16:9; with that
+  instead of 51° the tilt moves by under 0.5°, and the ball's size ranges it at 1.02 m
+  rather than 0.97 m, which is a hint the 51° below is a little wide.
 - **The lens is 51°, not 60°.** Measured the same day: the robot turned ±0.2 rad in
   place with the ball in front of it, and the ball's pixel shift against odometry yaw
   gave a focal length of ~1340 px. Two independent checks agree with it — at 60° the

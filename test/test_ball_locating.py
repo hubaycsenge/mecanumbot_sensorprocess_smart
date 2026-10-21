@@ -268,9 +268,21 @@ def floor_ball_box(camera, place, forward):
     )
 
 
+def level_ticks(neck=None):
+    """Return the neck position at which the lens looks level (~505 since 2026-10-21)."""
+    neck = neck or NeckMount()
+    return neck.level_ticks - neck.pitch_at_level / neck.rad_per_tick
+
+
+def test_the_lens_is_level_at_505_ticks():
+    """MEASURED 2026-10-21: a ball on the floor 1 m out, -1.2..-1.8 deg at 500."""
+    assert level_ticks() == pytest.approx(505.0, abs=1.0)
+    assert math.degrees(NeckMount().pitch(500)) == pytest.approx(-1.5, abs=0.5)
+
+
 def test_the_neck_at_level_puts_the_lens_where_the_fixed_numbers_do():
     """The neck model and `BallGeometry`'s defaults describe the same camera."""
-    place = NeckMount().geometry(geometry(), 600)
+    place = NeckMount().geometry(geometry(), level_ticks())
     assert place.camera_pitch == pytest.approx(0.0)
     assert place.camera_x == pytest.approx(0.128, abs=0.005)
     assert place.camera_z == pytest.approx(0.2245, abs=0.005)
@@ -279,7 +291,7 @@ def test_the_neck_at_level_puts_the_lens_where_the_fixed_numbers_do():
 def test_a_larger_neck_position_looks_further_up():
     """The trees' convention: larger neck positions look further up."""
     neck = NeckMount()
-    assert neck.pitch(600) == pytest.approx(0.0)
+    assert neck.pitch(level_ticks()) == pytest.approx(0.0)
     assert neck.pitch(300) < neck.pitch(600) < neck.pitch(700)
 
 

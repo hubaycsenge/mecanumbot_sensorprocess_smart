@@ -237,8 +237,9 @@ class PersonLocateNode(Node):
         self.declare_parameter("ball.neck.lever_z", 0.0545)
         self.declare_parameter("ball.neck.level_ticks", 600.0)
         self.declare_parameter("ball.neck.rad_per_tick", 0.005061)
-        # UNMEASURED: the lens tilt at level_ticks, positive up.
-        self.declare_parameter("ball.neck.pitch_at_level_deg", 4.7)
+        # The lens tilt at level_ticks, positive up: level at ~505 ticks
+        # (measured 2026-10-21), so 27.5 deg at 600. See the config file.
+        self.declare_parameter("ball.neck.pitch_at_level_deg", 27.5)
         self.declare_parameter("ball.tracking.max_association_distance", 0.6)
         self.declare_parameter("ball.tracking.min_hits", 2)
         self.declare_parameter("ball.tracking.max_coast_time", 1.0)

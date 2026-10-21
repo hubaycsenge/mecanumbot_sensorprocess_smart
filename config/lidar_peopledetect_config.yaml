@@ -519,17 +519,17 @@
         # reproduced (a free fit gave 0.005115).
         level_ticks: 600.0
         rad_per_tick: 0.005061
-        # MEASURED 2026-09-15: the lens tilt at level_ticks, positive up. A ball
-        # on the floor ~1 m ahead, the neck held still at 500..600 ticks in 0.1
-        # steps up and then down, floor_pitch() in ball_locating.py on every
-        # box with the 51 deg lens: +4.4 deg coming down, +5.0 going up (a
-        # couple of ticks of backlash), each within +-0.4 deg across positions.
-        # So the camera is optically level at ~584 ticks, not at 600. With the
-        # 0 this used to be, a ball on the floor was placed tens of cm below
-        # it and the fetch tree called it unreachable. The same number is
-        # mecanumbot_deep3r's camera.pitch_at_level_deg and the offset in
-        # mecanumbot_sensorproc_node's head_joint: change all three or none.
-        pitch_at_level_deg: 4.7
+        # The lens tilt at level_ticks, positive up: 27.5 deg. MEASURED
+        # 2026-10-21, a ball on the floor 1 m out, the neck at 500 ticks:
+        # -1.8 deg by floor_pitch() on its apparent size, -1.2 deg by its known
+        # distance, so the camera is level at ~505 ticks.
+        # The 2026-09-15 ball-on-floor fit gave 4.7 (level at ~584), but by
+        # 2026-10-21 the real head was straight at 500 and RViz drew it straight
+        # at 646. The same number is mecanumbot_deep3r's
+        # camera.pitch_at_level_deg and the offset in mecanumbot_sensorproc_node's
+        # head_joint: change all three or none. floor_pitch() in ball_locating.py
+        # is how to re-measure it.
+        pitch_at_level_deg: 27.5
 
       # Alpha-beta smoothing in the map frame. Lighter than the person tracker
       # on purpose: a ball is one cleanly-shaped unambiguous target with none of
