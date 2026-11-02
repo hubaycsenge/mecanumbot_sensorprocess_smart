@@ -495,7 +495,7 @@ joints, six joints in all); a second branch, picked when the box ran off the top
 frame, wanted legs instead, because a camera 0.23 m off the floor looking level frames a
 close person from the knees down. Each of those was an assumption about which part of a
 person the 30° frame shows, and each held for one tilt of the head only. The trees tilt
-it. In the 2026-10-16 leading pilot (`mecanumbot_directories/bag_debug/rosbag2_2026_10_16-*`)
+it. In the 2026-10-16 leading pilot (`~/Videos/Ethology/Leading/bag_debug/rosbag2_2026_10_16-*`)
 the head was up, and the gate threw out people the network was sure of: chest and arms
 at box 0.73–0.88 rejected as `near-legs 0<2`, and head and shoulders cut off by the
 bottom edge at box 0.32–0.54 rejected under the whole-body 0.6. Every rejected box
