@@ -12,6 +12,7 @@ This package provides ROS 2 nodes that extract information from mecanumbot's on-
 | `mecanumbot_onboard_cam_detect_objects`| Runs a plain DeepStream YOLO detector that finds **people and tennis balls**, for the fetch game. | `mecanumbot_sensorprocess_smart/mecanumbot_onboard_cam_detect_objects.py` |
 | `mecanumbot_locate_detections`         | Fuses camera and LiDAR detections and projects them into map space; also places the ball. | `mecanumbot_sensorprocess_smart/mecanumbot_locate_detections.py`         |
 | `mecanumbot_detect_tennis`             | Detects tennis balls from the camera stream and publishes their presence state.           | `mecanumbot_sensorprocess_smart/mecanumbot_detect_tennis.py`             |
+| `mecanumbot_detect_bricks`             | Finds the object-choice task's **coloured bricks** by colour threshold, places them in the map; owns the webcam and republishes it. | `mecanumbot_sensorprocess_smart/mecanumbot_detect_bricks.py`             |
 
 The camera detector comes in **three** variants, and which one is running changes what
 the robot can do:
@@ -1186,6 +1187,67 @@ camera geometry** and never compare them, because they never talk. A box centred
 the declared frame is warned about once, which is the cheapest symptom of their having
 drifted apart — and until they agree, every bearing and every apparent-size range
 computed here is wrong by the ratio between them.
+
+## Node: mecanumbot_detect_bricks
+
+The object-choice task's detector (`mecanumbot_object_choice_behaviour`): ≈6.5 cm
+cubes in distinct colours, one brick per colour, **the colour is the identity**. Not a
+network — no model here has a "brick" class — but an HSV threshold, connected blobs and
+two gates (`brick_detection.py`, pure Python, `test_brick_detection.py`):
+
+- **shape**: near-square box (`gate.min_aspect`/`max_aspect`), mostly filled
+  (`gate.min_fill`);
+- **on the floor at its size**: the ray through the box must meet the floor (solved
+  half a brick up), and the box must be about as wide as a brick at that range
+  (`gate.min_size_ratio`/`max_size_ratio`). This is what throws out red shirts and blue
+  bins: nothing bigger, nearer or higher than a floor brick passes.
+
+Placement reuses `ball_locating.py` — the pinhole model, `NeckMount` and `NeckHistory`
+for the tilt each frame was taken at, and one `BallTracker` per colour — with
+`brick.range_source: ground_plane` by default: a cube's apparent width changes by up to
+√2 as it turns, so its size is a worse range than a ball's.
+
+**It owns the webcam.** The object-choice tree needs skeletons *and* bricks off one
+camera that can be opened once, so with `camera_source: device` this node opens it
+(OpenCV, MJPG) and republishes every frame on `frames_topic`
+(`/camera/image_raw/compressed`), which the pose detector reads with
+`camera_source:=topic`. `perception.launch.py bricks:=true` starts it that way, and
+refuses `bricks:=true` with `camera_source:=direct`. `camera_source: topic` reads the
+topic instead, for when something else owns the device.
+
+### Publishers
+
+| Topic | Data type | Function |
+| --- | --- | --- |
+| `cam_brick_boxes` | `vision_msgs/msg/Detection2DArray` | Accepted bricks, full-frame pixels, `class_id` = colour. Published every processed frame, empty included. |
+| `brick_detections` | `vision_msgs/msg/Detection3DArray` | Tracked bricks in `map`, `class_id` = colour, `z` = centre height. Only when something is tracked. |
+| `/camera/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | Every captured frame, JPEG, when `camera_source: device` and `publish_frames`. |
+| `cam_brick_detections/debug_image/compressed` | `sensor_msgs/msg/CompressedImage` | Half-size frame with accepted and refused blobs and why. Only with `debug_mode`. |
+
+### Subscribers
+
+| Topic | Data type | Processing |
+| --- | --- | --- |
+| `opencr_state` | `mecanumbot_msgs/msg/OpenCRState` | Neck position per frame (`neck.*`). |
+| `camera_topic` | `sensor_msgs/msg/CompressedImage` | Only with `camera_source: topic`. |
+| TF `map` ← `mecanumbot/base_link` | | Placing bricks in the map. |
+
+### Parameters (in `config/lidar_peopledetect_config.yaml`)
+
+| Parameter | Default | Function |
+| --- | --- | --- |
+| `camera_source` | `device` | `device` opens `webcam_device`; `topic` reads `camera_topic` |
+| `publish_frames`, `frames_topic`, `jpeg_quality`, `camera_fps` | `true`, `/camera/image_raw/compressed`, 80, 15 | the republished stream |
+| `camera_params.*` | 1280×720, 51° | must match every camera node; `perception.launch.py` sets them |
+| `mirror_image_x` | `false` | **unmeasured** — a brick on the robot's left must come out at +y |
+| `process_rate`, `process_scale` | 8 Hz, 2 | how often and at what reduction frames are searched |
+| `brick.size`, `brick.range_source`, `brick.camera_*`, `brick.floor_z`, `brick.min/max_range` | 0.065, `ground_plane`, … | as `ball.*` in the fusion node |
+| `neck.*` | as `ball.neck.*` | **a fourth copy of `pitch_at_level_deg`**: change all four together |
+| `gate.*` | see above | |
+| `colours.names`, `colours.<name>` | red, yellow, green, blue | OpenCV HSV `[h_lo, h_hi, s_lo, s_hi, v_lo, v_hi]`, hue 0..179, `h_lo > h_hi` wraps (red). Starting points, not a calibration |
+| `tracking.*` | min_hits 3, coast 1.5 s | per-colour alpha-beta, as the ball's |
+| `debug_mode` | `false` | `perception.launch.py debug_image` sets it |
+| `calibrate` | `false` | logs the median HSV in a centre box every 2 s: hold a brick there to set its range |
 
 ## Node: mecanumbot_detect_tennis
 

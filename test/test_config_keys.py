@@ -23,6 +23,7 @@ NODES = (
     "mecanumbot_cam_detect_people_ds",
     "mecanumbot_cam_detect_objects_ds",
     "mecanumbot_locate_detections",
+    "mecanumbot_detect_bricks",
 )
 
 

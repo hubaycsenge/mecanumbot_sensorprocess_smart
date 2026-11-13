@@ -35,6 +35,17 @@ dependency cycle. Depending on the perception package instead does not.
 * `mecanumbot_locate_detections` -- the fusion, publishing `people_fusion` and,
   with the fetch detector, `ball_fusion` / `ball_detections`.
 
+## `bricks`: the object-choice task's fourth node
+
+`bricks:=true` adds `mecanumbot_detect_bricks`, which finds coloured cubes by
+colour threshold (`cam_brick_boxes`, `brick_detections`). It is not a network,
+so it runs beside the pose detector rather than instead of it -- but it needs
+the same camera, which can be opened once. So with `bricks:=true` the brick node
+**owns the webcam** and republishes its frames on `camera_topic`, and the pose
+detector must read them: `camera_source:=topic` is required, and this launch
+refuses `bricks:=true` with `direct`. It is the one case where this launch does
+start a compressed camera stream.
+
 ## `camera_source`: how frames reach the network
 
 **`direct` is the default, and the intended way to run on the robot.** The
@@ -147,6 +158,25 @@ def _check_camera_source(context):
         raise RuntimeError(
             f"camera_source:={source!r} is not one of {', '.join(CAMERA_SOURCES)}."
         )
+    bricks = context.launch_configurations.get("bricks", "false").lower() == "true"
+    if bricks and source != "topic":
+        raise RuntimeError(
+            "bricks:=true opens the webcam in mecanumbot_detect_bricks and "
+            "republishes it, so the camera detector has to read that stream: "
+            "add camera_source:=topic. With direct, both would try to open "
+            "the one camera."
+        )
+    if bricks:
+        return [
+            LogInfo(
+                msg=(
+                    "[perception] bricks=true: mecanumbot_detect_bricks opens the "
+                    "webcam and republishes it on "
+                    f"{context.launch_configurations.get('camera_topic')}, which "
+                    "the camera detector reads (camera_source=topic)"
+                )
+            )
+        ]
     if source == "direct":
         message = (
             "[perception] camera_source=direct: the detector opens the webcam "
@@ -252,6 +282,15 @@ def generate_launch_description():
                     "Publish the camera detector's annotated frame on "
                     "<detector topic>/debug_image/compressed. Costs a frame copy "
                     "and a JPEG encode per frame"
+                ),
+            ),
+            DeclareLaunchArgument(
+                "bricks",
+                default_value="false",
+                description=(
+                    "Also run mecanumbot_detect_bricks (coloured cubes, for the "
+                    "object-choice task). It opens the webcam and republishes it "
+                    "on camera_topic, so it needs camera_source:=topic"
                 ),
             ),
             DeclareLaunchArgument(
@@ -375,6 +414,34 @@ def generate_launch_description():
                             LaunchConfiguration("fetch_imgsz"), value_type=int
                         ),
                         "model_params.model_name": LaunchConfiguration("fetch_model"),
+                    },
+                ],
+            ),
+            # The object-choice task's bricks. It owns the camera and
+            # republishes it on camera_topic, which is where the pose detector
+            # reads with camera_source:=topic.
+            Node(
+                namespace=namespace,
+                package="mecanumbot_sensorprocess_smart",
+                executable="mecanumbot_detect_bricks",
+                name="mecanumbot_detect_bricks",
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("bricks")),
+                parameters=[
+                    PERCEPTION_YAML,
+                    camera_params,
+                    {
+                        "use_sim_time": use_sim_time,
+                        "camera_source": "device",
+                        "publish_frames": True,
+                        "frames_topic": camera_topic,
+                        "camera_fps": ParameterValue(
+                            LaunchConfiguration("camera_fps"), value_type=float
+                        ),
+                        "jpeg_quality": ParameterValue(
+                            LaunchConfiguration("jpeg_quality"), value_type=int
+                        ),
+                        "debug_mode": debug_mode,
                     },
                 ],
             ),

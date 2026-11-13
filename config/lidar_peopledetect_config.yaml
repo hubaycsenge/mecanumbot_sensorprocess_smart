@@ -648,3 +648,88 @@
     # encode per frame.
     debug_mode: false
     log_rejections: false
+
+# ==============================================================================
+# The object-choice task's coloured bricks
+# ==============================================================================
+# Colour thresholds, not a network: see brick_detection.py. Runs only with
+# perception.launch.py bricks:=true, and then it OWNS THE WEBCAM and republishes
+# its frames on /camera/image_raw/compressed for the pose detector, which must
+# run with camera_source:=topic. One brick per colour: the colour is the brick.
+/**/mecanumbot_detect_bricks:
+  ros__parameters:
+    camera_source: device          # device | topic
+    webcam_device: /dev/video0
+    camera_fps: 15.0
+    publish_frames: true
+    frames_topic: /camera/image_raw/compressed
+    jpeg_quality: 80
+    # perception.launch.py overrides these three, as for every camera node.
+    camera_params:
+      camera_width: 1280
+      camera_height: 720
+      camera_fov: 0.8901179185   # 51 deg
+      camera_vfov: 0.0
+    # NOT MEASURED. Check before the first trial: a brick on the robot's LEFT
+    # must come out at positive y in the base frame (the debug image's range
+    # label says nothing about the side). The fetch ball path assumes no mirror.
+    mirror_image_x: false
+    process_rate: 8.0
+    process_scale: 2.0
+    open_kernel: 3
+    brick:
+      size: 0.065
+      # ground_plane: a cube's apparent width changes by up to sqrt(2) as it
+      # turns, so its size is a worse range than a ball's.
+      range_source: ground_plane
+      camera_x: 0.128
+      camera_z: 0.2245
+      camera_pitch_deg: 0.0
+      floor_z: -0.01
+      min_range: 0.15
+      max_range: 5.0
+    # The same servo and the same numbers as mecanumbot_locate_detections'
+    # ball.neck.*. A fourth copy of pitch_at_level_deg: change it with the
+    # other three (that one, mecanumbot_deep3r's, mecanumbot_sensorproc_node's).
+    neck:
+      enabled: true
+      topic: opencr_state
+      stale_s: 0.5
+      pivot_x: 0.1063
+      pivot_z: 0.170
+      lever_x: 0.022
+      lever_z: 0.0545
+      level_ticks: 600.0
+      rad_per_tick: 0.005061
+      pitch_at_level_deg: 27.5
+    gate:
+      min_area: 80.0          # full-frame px
+      min_aspect: 0.5
+      max_aspect: 2.2
+      min_fill: 0.45
+      # observed width / a floor brick's width at the floor range
+      min_size_ratio: 0.6
+      max_size_ratio: 2.0
+    # OpenCV HSV: [h_lo, h_hi, s_lo, s_hi, v_lo, v_hi], h 0..179. h_lo > h_hi
+    # wraps through 0 (red). STARTING POINTS for the room's light: set
+    # calibrate: true, hold each brick in the centre box, read the log.
+    colours:
+      names: [red, yellow, green, blue]
+      red: [170, 8, 120, 255, 70, 255]
+      yellow: [20, 34, 110, 255, 90, 255]
+      green: [40, 85, 90, 255, 50, 255]
+      blue: [95, 130, 110, 255, 50, 255]
+    tracking:
+      max_association_distance: 0.5
+      min_hits: 3
+      max_coast_time: 1.5
+      position_gain: 0.4
+      velocity_gain: 0.0
+      max_speed: 1.0
+    boxes_topic: cam_brick_boxes
+    detections_topic: brick_detections
+    map_frame: map
+    base_frame: mecanumbot/base_link
+    debug_mode: false
+    debug_topic: cam_brick_detections/debug_image/compressed
+    calibrate: false
