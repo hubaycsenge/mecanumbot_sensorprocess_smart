@@ -43,6 +43,29 @@ from mecanumbot_sensorprocess_smart.debug_overlay import (
 DEBUG_KEYPOINT_CONF = 0.3
 
 
+
+def _v4l2_set(device, cid, value):
+    """Set one V4L2 control (OpenCV cannot reach exposure_auto_priority). Best effort."""
+    import fcntl
+    import os
+    import struct
+    path = device if str(device).startswith("/dev/") else f"/dev/video{int(device)}"
+    try:
+        fd = os.open(path, os.O_RDWR)
+        try:
+            fcntl.ioctl(fd, 0xC008561C, bytearray(struct.pack("Ii", cid, int(value))))  # VIDIOC_S_CTRL
+        finally:
+            os.close(fd)
+        return True
+    except OSError:
+        return False
+
+
+V4L2_EXPOSURE_AUTO = 0x009A0901           # 1 = manual, 3 = auto
+V4L2_EXPOSURE_ABSOLUTE = 0x009A0902       # units of 100 us
+V4L2_EXPOSURE_AUTO_PRIORITY = 0x009A0903  # 0 = keep the frame rate
+
+
 class PersonDetectNode(Node):
     def __init__(self, namespace=""):
         super().__init__("mecanumbot_cam_detect_people")
@@ -117,8 +140,18 @@ class PersonDetectNode(Node):
             self.get_logger().info(f"Using camera topic input: {self.camera_topic}")
         else:
             self.webcam_capture = cv2.VideoCapture(self.webcam_device, cv2.CAP_V4L2)
+            # MJPG: the C270 does 1280x720 at 30 fps only in MJPG (YUYV caps it at 7.5 fps).
+            self.webcam_capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             self.webcam_capture.set(cv2.CAP_PROP_FRAME_WIDTH, int(self.camera_width))
             self.webcam_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self.camera_height))
+            self.webcam_capture.set(cv2.CAP_PROP_FPS, 30)
+            # Short manual exposure, no frame-rate drop: long auto exposures blurred every turn.
+            _v4l2_set(self.webcam_device, V4L2_EXPOSURE_AUTO_PRIORITY, 0)
+            _v4l2_set(self.webcam_device, V4L2_EXPOSURE_AUTO, 1)
+            _v4l2_set(self.webcam_device, V4L2_EXPOSURE_ABSOLUTE, 100)
+            fourcc = int(self.webcam_capture.get(cv2.CAP_PROP_FOURCC)).to_bytes(4, "little").decode(errors="replace")
+            self.get_logger().info(
+                f"camera mode: {fourcc} at {self.webcam_capture.get(cv2.CAP_PROP_FPS):.1f} fps")
             if not self.webcam_capture.isOpened():
                 self.get_logger().error(
                     f"Failed to open webcam device: {self.webcam_device}"
