@@ -30,6 +30,7 @@ import os
 
 import math
 
+from mecanumbot_sensorprocess_smart import camera_exposure
 from mecanumbot_sensorprocess_smart.debug_overlay import (
     COLOUR_PERSON,
     COLOUR_REJECTED,
@@ -41,29 +42,6 @@ from mecanumbot_sensorprocess_smart.debug_overlay import (
 # Joints below this confidence are left off the debug image. Drawing only: the
 # published keypoints are not thresholded by this node.
 DEBUG_KEYPOINT_CONF = 0.3
-
-
-
-def _v4l2_set(device, cid, value):
-    """Set one V4L2 control (OpenCV cannot reach exposure_auto_priority). Best effort."""
-    import fcntl
-    import os
-    import struct
-    path = device if str(device).startswith("/dev/") else f"/dev/video{int(device)}"
-    try:
-        fd = os.open(path, os.O_RDWR)
-        try:
-            fcntl.ioctl(fd, 0xC008561C, bytearray(struct.pack("Ii", cid, int(value))))  # VIDIOC_S_CTRL
-        finally:
-            os.close(fd)
-        return True
-    except OSError:
-        return False
-
-
-V4L2_EXPOSURE_AUTO = 0x009A0901           # 1 = manual, 3 = auto
-V4L2_EXPOSURE_ABSOLUTE = 0x009A0902       # units of 100 us
-V4L2_EXPOSURE_AUTO_PRIORITY = 0x009A0903  # 0 = keep the frame rate
 
 
 class PersonDetectNode(Node):
@@ -78,6 +56,10 @@ class PersonDetectNode(Node):
                 ("from_topic", False),
                 ("camera_topic", "camera/image_raw/compressed"),
                 ("webcam_device", "/dev/video0"),
+                # Exposure, set on open (see camera_exposure.py): auto | manual | leave.
+                ("exposure_mode", "auto"),
+                ("exposure_ms", 10.0),
+                ("exposure_keep_fps", False),
                 ("img_process_params.weight_file", "yolo26n-pose.pt"),
                 ("debug_mode", False),
             ],
@@ -145,10 +127,15 @@ class PersonDetectNode(Node):
             self.webcam_capture.set(cv2.CAP_PROP_FRAME_WIDTH, int(self.camera_width))
             self.webcam_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self.camera_height))
             self.webcam_capture.set(cv2.CAP_PROP_FPS, 30)
-            # Short manual exposure, no frame-rate drop: long auto exposures blurred every turn.
-            _v4l2_set(self.webcam_device, V4L2_EXPOSURE_AUTO_PRIORITY, 0)
-            _v4l2_set(self.webcam_device, V4L2_EXPOSURE_AUTO, 1)
-            _v4l2_set(self.webcam_device, V4L2_EXPOSURE_ABSOLUTE, 100)
+            # Auto by default, so a dim room stays visible. exposure_mode:=manual
+            # (exposure_ms 10) is the short exposure that keeps turns sharp.
+            camera_exposure.apply_and_log(
+                self.get_logger(),
+                self.webcam_device,
+                str(self.get_parameter("exposure_mode").value),
+                float(self.get_parameter("exposure_ms").value),
+                bool(self.get_parameter("exposure_keep_fps").value),
+            )
             fourcc = int(self.webcam_capture.get(cv2.CAP_PROP_FOURCC)).to_bytes(4, "little").decode(errors="replace")
             self.get_logger().info(
                 f"camera mode: {fourcc} at {self.webcam_capture.get(cv2.CAP_PROP_FPS):.1f} fps")

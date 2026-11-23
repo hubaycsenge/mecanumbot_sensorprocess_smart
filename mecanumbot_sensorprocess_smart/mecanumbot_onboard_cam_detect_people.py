@@ -21,7 +21,7 @@ import math
 import transforms3d as t3d
 from ament_index_python.packages import get_package_share_directory
 
-from mecanumbot_sensorprocess_smart import nvinfer_config
+from mecanumbot_sensorprocess_smart import camera_exposure, nvinfer_config
 from mecanumbot_sensorprocess_smart.debug_overlay import SKELETON_CONNECTIONS
 from mecanumbot_sensorprocess_smart.ros4hri_bridge import (
     BodyIdTracker,
@@ -102,6 +102,11 @@ class DeepStreamPersonDetectNode(Node):
                 ("from_topic", False),
                 ("camera_topic", "camera/image_raw/compressed"),
                 ("webcam_device", "/dev/video0"),
+                # Exposure, set before v4l2src opens the camera (see
+                # camera_exposure.py): auto | manual | leave. Direct mode only.
+                ("exposure_mode", "auto"),
+                ("exposure_ms", 10.0),
+                ("exposure_keep_fps", False),
                 ("debug_mode", False),
                 ("keypoint_scaling", "auto"),
                 ("ros4hri.enabled", True),
@@ -188,8 +193,13 @@ class DeepStreamPersonDetectNode(Node):
             )
             self.source = Gst.ElementFactory.make("appsrc", "ros-image-source")
             self.source.set_property("is-live", True)
+            # RGBA, not the BGR cv2 decodes to: on the Jetson the first
+            # nvvideoconvert runs on the VIC, which cannot convert BGR/RGB
+            # ("NvVicCompose Failed ... RGB/BGR Format transformation is not
+            # supported by VIC"), fails the first buffer, and the pipeline
+            # stops at EOS with the node still alive. image_callback converts.
             caps = Gst.Caps.from_string(
-                f"video/x-raw, format=BGR, width={self.camera_width}, height={self.camera_height}, framerate=15/1"
+                f"video/x-raw, format=RGBA, width={self.camera_width}, height={self.camera_height}, framerate=15/1"
             )
             self.source.set_property("caps", caps)
 
@@ -211,6 +221,15 @@ class DeepStreamPersonDetectNode(Node):
                 f"Frame source: DIRECT -- v4l2src on {self.webcam_device}, no ROS "
                 "image topic in between. Nothing else can open the camera while "
                 "this runs."
+            )
+            # The webcam keeps whatever exposure the last node gave it, so say
+            # which one this application wants (auto unless launched otherwise).
+            camera_exposure.apply_and_log(
+                self.get_logger(),
+                self.webcam_device,
+                str(self.get_parameter("exposure_mode").value),
+                float(self.get_parameter("exposure_ms").value),
+                bool(self.get_parameter("exposure_keep_fps").value),
             )
             self.source = Gst.ElementFactory.make("v4l2src", "webcam-source")
             self.source.set_property("device", self.webcam_device)
@@ -781,8 +800,9 @@ class DeepStreamPersonDetectNode(Node):
         try:
             np_arr = np.frombuffer(msg.data, np.uint8)
             cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            rgba = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGBA)
 
-            data = cv_image.tobytes()
+            data = rgba.tobytes()
             buffer = Gst.Buffer.new_allocate(None, len(data), None)
             buffer.fill(0, data)
             self.source.emit("push-buffer", buffer)

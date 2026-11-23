@@ -69,7 +69,7 @@ from gi.repository import Gst  # noqa: E402  (gi requires the version call first
 import cv2  # noqa: E402
 import pyds  # noqa: E402
 
-from mecanumbot_sensorprocess_smart import nvinfer_config  # noqa: E402
+from mecanumbot_sensorprocess_smart import camera_exposure, nvinfer_config  # noqa: E402
 from mecanumbot_sensorprocess_smart.object_gating import (  # noqa: E402
     BoxConfirmer,
     ClassGate,
@@ -123,6 +123,11 @@ class DeepStreamObjectDetectNode(Node):
                 ("from_topic", False),
                 ("camera_topic", "camera/image_raw/compressed"),
                 ("webcam_device", "/dev/video0"),
+                # Exposure, set before v4l2src opens the camera (see
+                # camera_exposure.py): auto | manual | leave. Direct mode only.
+                ("exposure_mode", "auto"),
+                ("exposure_ms", 10.0),
+                ("exposure_keep_fps", False),
                 ("debug_mode", False),
                 ("log_rejections", False),
                 # ---- what to keep, and what to call it ----
@@ -435,6 +440,15 @@ class DeepStreamObjectDetectNode(Node):
                 sensor_qos,
             )
         else:
+            # The webcam keeps whatever exposure the last node gave it, so say
+            # which one this application wants (auto unless launched otherwise).
+            camera_exposure.apply_and_log(
+                self.get_logger(),
+                self.webcam_device,
+                str(self.get_parameter("exposure_mode").value),
+                float(self.get_parameter("exposure_ms").value),
+                bool(self.get_parameter("exposure_keep_fps").value),
+            )
             self.source = Gst.ElementFactory.make("v4l2src", "webcam-source")
             self.source.set_property("device", self.webcam_device)
             self.webcam_caps = Gst.ElementFactory.make("capsfilter", "webcam_caps")

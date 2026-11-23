@@ -2,9 +2,12 @@
 """
 Finding coloured bricks on the floor by their colour, and deciding which are real.
 
-The object-choice task puts a few small cubes on the floor, each a different
-colour, and the colour is what makes one brick *that* brick: the person points
-at one, and the robot has to know which. No network on this robot can name
+The object-choice task puts a few small cubes on the floor, and the person
+points at one. They may each be a different colour, or all be the same plain
+wood -- the classic paradigm's identical targets. Either way they are found by
+colour; what makes one brick *that* brick is the colour when it is unique, and
+where it lies when it is not (`max_per_colour`, and the object-choice tree's
+`brick_identity.py`). No network on this robot can name
 them -- the fetch detector's COCO classes have no "brick", and the pose
 detector has one class -- so they are found the way a coloured object on a
 plain floor has always been found: threshold the frame in HSV, take the
@@ -58,6 +61,12 @@ DEFAULT_COLOURS = {
     "yellow": (20, 34, 110, 255, 90, 255),
     "green": (40, 85, 90, 255, 50, 255),
     "blue": (95, 130, 110, 255, 50, 255),
+    # Unpainted light wood (beech, pine): an orange hue at LOW saturation, which
+    # is what separates it from the four above -- and also what it shares with
+    # skin, cardboard and a wooden floor. The shape and floor gates carry more
+    # of the weight here than for a painted brick, and the range needs
+    # calibrating in the room more than any other.
+    "wood": (8, 28, 35, 170, 90, 255),
 }
 
 # Why a blob was refused. Carried on the rejection so the debug image and the
@@ -302,9 +311,10 @@ def detect_bricks(
     mirror=False,
     open_kernel=3,
     prefer=ball_locating.SOURCE_GROUND,
+    max_per_colour=1,
 ):
     """
-    Find at most one brick of each colour in an HSV frame.
+    Find at most `max_per_colour` bricks of each colour in an HSV frame.
 
     `hsv` may be a downscaled copy of the camera frame; `scale` is how many
     full-frame pixels one of its pixels is, and every box is reported in the
@@ -312,16 +322,19 @@ def detect_bricks(
     reflected left-right before anything is measured off them, for a camera
     that hands over a mirror image of the room.
 
-    Returns `(accepted, rejected)`: `BrickCandidate`s, one per colour at most --
-    the colour is the brick's identity, so two red blobs that both pass are one
-    brick and a doubt, and the larger is kept -- and `(blob, reason)` pairs for
-    the debug image.
+    Returns `(accepted, rejected)`: `BrickCandidate`s, at most `max_per_colour`
+    of each colour, largest first, and `(blob, reason)` pairs for the debug
+    image. With the default of one, the colour is the brick's identity, so two
+    red blobs that both pass are one brick and a doubt, and the larger is kept.
+    With identical bricks, every one of them is wanted, and the cap only bounds
+    what a badly set range can flood the tracker with.
     """
+    limit = max(1, int(max_per_colour))
     accepted = []
     rejected = []
     min_area_scaled = gate.min_area / (float(scale) ** 2)
     for colour in colours:
-        best = None
+        kept = 0
         blobs = find_blobs(
             colour.mask(hsv),
             colour.name,
@@ -345,13 +358,12 @@ def detect_bricks(
             if reason is not None:
                 rejected.append((blob, reason))
                 continue
-            # Largest first, so the first that passes is the one kept.
-            if best is None:
-                best = BrickCandidate(blob, observation)
+            # Largest first, so the ones that pass first are the ones kept.
+            if kept < limit:
+                accepted.append(BrickCandidate(blob, observation))
+                kept += 1
             else:
-                rejected.append((blob, "second " + colour.name))
-        if best is not None:
-            accepted.append(best)
+                rejected.append((blob, f"one {colour.name} too many"))
     return accepted, rejected
 
 

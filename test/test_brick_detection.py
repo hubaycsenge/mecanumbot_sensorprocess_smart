@@ -118,7 +118,47 @@ def test_a_second_blob_of_one_colour_is_not_a_second_brick():
     assert len(accepted) == 1
     # The larger, nearer one is kept.
     assert accepted[0].observation.range == pytest.approx(1.0, rel=0.05)
-    assert any(reason == "second red" for _, reason in rejected)
+    assert any(reason == "one red too many" for _, reason in rejected)
+
+
+# --- identical bricks -------------------------------------------------------
+
+# Unpainted light wood under room light: orange, pale, bright.
+HSV["wood"] = (16, 90, 190)
+
+
+def test_a_wooden_brick_is_wood_and_no_painted_colour():
+    frame = blank()
+    draw_brick(frame, "wood", 1.5)
+    accepted, _ = bd.detect_bricks(frame, COLOURS, GATE, CAMERA, GEOMETRY)
+    assert [c.blob.colour for c in accepted] == ["wood"]
+
+
+def test_identical_bricks_are_all_found_when_allowed():
+    frame = blank()
+    bearings = [20, 7, -7, -20]
+    for bearing in bearings:
+        draw_brick(frame, "wood", 1.6, bearing=math.radians(bearing))
+    accepted, rejected = bd.detect_bricks(
+        frame, COLOURS, GATE, CAMERA, GEOMETRY, max_per_colour=6
+    )
+    assert [c.blob.colour for c in accepted] == ["wood"] * 4
+    assert not rejected
+    # Four distinct places, left to right in the robot frame.
+    ys = sorted((c.observation.y for c in accepted), reverse=True)
+    assert all(a - b > 0.2 for a, b in zip(ys, ys[1:]))
+
+
+def test_the_per_colour_cap_keeps_the_largest():
+    frame = blank()
+    for distance, bearing in ((0.9, 15), (1.5, 0), (2.4, -15)):
+        draw_brick(frame, "wood", distance, bearing=math.radians(bearing))
+    accepted, rejected = bd.detect_bricks(
+        frame, COLOURS, GATE, CAMERA, GEOMETRY, max_per_colour=2
+    )
+    ranges = sorted(c.observation.range for c in accepted)
+    assert ranges == [pytest.approx(0.9, rel=0.05), pytest.approx(1.5, rel=0.05)]
+    assert [reason for _, reason in rejected] == ["one wood too many"]
 
 
 def test_a_big_patch_is_too_big_for_a_brick_where_it_meets_the_floor():

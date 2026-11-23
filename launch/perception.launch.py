@@ -229,6 +229,18 @@ def generate_launch_description():
         "camera_params.camera_fov": hfov,
     }
 
+    # Exposure for the three nodes that open the webcam (see camera_exposure.py).
+    # The camera keeps the last exposure any node set, so every application says
+    # its own: auto here, so a dim room stays visible; the Deep3R client sets
+    # its own short manual exposure in deep3r.launch.py.
+    exposure_params = {
+        "exposure_mode": LaunchConfiguration("exposure_mode"),
+        "exposure_ms": ParameterValue(LaunchConfiguration("exposure_ms"), value_type=float),
+        "exposure_keep_fps": ParameterValue(
+            LaunchConfiguration("exposure_keep_fps"), value_type=bool
+        ),
+    }
+
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -343,6 +355,29 @@ def generate_launch_description():
                 default_value="yolo26m",
                 description="Detection model stem inside models/imgsz_<fetch_imgsz>/",
             ),
+            DeclareLaunchArgument(
+                "exposure_mode",
+                default_value="auto",
+                choices=["auto", "manual", "leave"],
+                description=(
+                    "Webcam exposure the detectors set when they open it: auto "
+                    "(dim rooms stay visible), manual (exposure_ms, sharp in "
+                    "turns but dark in dim light) or leave (touch nothing)"
+                ),
+            ),
+            DeclareLaunchArgument(
+                "exposure_ms",
+                default_value="10.0",
+                description="Manual exposure [ms]; used only with exposure_mode:=manual",
+            ),
+            DeclareLaunchArgument(
+                "exposure_keep_fps",
+                default_value="false",
+                description=(
+                    "With auto exposure, hold the frame rate in dim light "
+                    "(darker frames) instead of lengthening exposures"
+                ),
+            ),
             LogInfo(
                 msg=[
                     "[perception] detector=",
@@ -380,6 +415,7 @@ def generate_launch_description():
                 parameters=[
                     PERCEPTION_YAML,
                     camera_params,
+                    exposure_params,
                     {
                         "use_sim_time": use_sim_time,
                         "from_topic": from_topic,
@@ -405,6 +441,7 @@ def generate_launch_description():
                 parameters=[
                     PERCEPTION_YAML,
                     camera_params,
+                    exposure_params,
                     {
                         "use_sim_time": use_sim_time,
                         "from_topic": from_topic,
@@ -430,6 +467,7 @@ def generate_launch_description():
                 parameters=[
                     PERCEPTION_YAML,
                     camera_params,
+                    exposure_params,
                     {
                         "use_sim_time": use_sim_time,
                         "camera_source": "device",

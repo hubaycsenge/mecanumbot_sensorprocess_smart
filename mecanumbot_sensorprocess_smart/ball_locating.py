@@ -498,6 +498,9 @@ class BallTrack:
     hits: int = 1
     last_update: float = 0.0
     confirmed: bool = False
+    # Unique within one tracker, never reused: which track is which when two
+    # objects look the same (the object-choice task's identical bricks).
+    ident: int = 0
 
     @property
     def position(self):
@@ -524,6 +527,7 @@ class BallTracker:
         self.config = config or BallTrackerConfig()
         self.tracks = []
         self._last_step = None
+        self._next_ident = 1
 
     def step(self, measurements, now):
         """Advance to `now`, fold in the measurements, return confirmed tracks."""
@@ -549,7 +553,9 @@ class BallTracker:
                 z=measurement.z,
                 score=measurement.score,
                 last_update=now,
+                ident=self._next_ident,
             )
+            self._next_ident += 1
             # A first sighting already counts as a hit, so `min_hits: 1` has to
             # mean "publish it now" rather than "publish it next frame".
             track.confirmed = track.hits >= self.config.min_hits

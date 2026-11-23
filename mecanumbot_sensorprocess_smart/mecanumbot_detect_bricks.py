@@ -2,11 +2,22 @@
 """
 The object-choice task's brick detector: coloured cubes, found and placed in the map.
 
-Publishes the same two shapes the fetch game's ball goes out in, one brick per
-colour, with the colour as the label:
+Publishes the same two shapes the fetch game's ball goes out in, with the
+colour as the label (`class_id`):
 
     cam_brick_boxes      vision_msgs/Detection2DArray   pixel boxes, full frame
     brick_detections     vision_msgs/Detection3DArray   map frame, with height
+
+## Identical bricks
+
+`max_per_colour: 1` (the default) is the coloured-brick task: one brick per
+colour, the colour is its identity, and `id` is the colour. Above one -- four
+plain wooden cubes, say -- every tracked brick of a colour is published, each
+with `id` `<colour>/<track number>`, and each pixel box carries the map position
+it was placed at in its hypothesis pose (`covariance[0] = -1` when it could not
+be placed), so a consumer can tell which box is which brick by where it is.
+Which brick is *the* brick is then the object-choice tree's business: see its
+`brick_identity.py`.
 
 The colour finding and the gates are `brick_detection.py`; the camera model,
 the neck model and the per-object tracker are `ball_locating.py`'s, because a
@@ -62,6 +73,7 @@ from vision_msgs.msg import (
 from mecanumbot_msgs.msg import OpenCRState
 from mecanumbot_sensorprocess_smart import ball_locating
 from mecanumbot_sensorprocess_smart import brick_detection as bd
+from mecanumbot_sensorprocess_smart import camera_exposure
 
 SOURCE_DEVICE = "device"
 SOURCE_TOPIC = "topic"
@@ -72,6 +84,7 @@ DRAW_COLOURS = {
     "yellow": (30, 220, 230),
     "green": (60, 200, 60),
     "blue": (230, 120, 40),
+    "wood": (140, 200, 230),
 }
 REJECT_DRAW = (128, 128, 128)
 
@@ -88,6 +101,11 @@ class BrickDetectNode(Node):
         self.declare_parameter("camera_source", SOURCE_DEVICE)
         self.declare_parameter("webcam_device", "/dev/video0")
         self.declare_parameter("camera_fps", 15.0)
+        # Exposure, set each time the camera is opened (see camera_exposure.py):
+        # auto | manual | leave.
+        self.declare_parameter("exposure_mode", "auto")
+        self.declare_parameter("exposure_ms", 10.0)
+        self.declare_parameter("exposure_keep_fps", False)
         self.declare_parameter("camera_topic", "/camera/image_raw/compressed")
         self.declare_parameter("publish_frames", True)
         self.declare_parameter("frames_topic", "/camera/image_raw/compressed")
@@ -180,6 +198,9 @@ class BrickDetectNode(Node):
         self.declare_parameter("debug_mode", False)
         self.declare_parameter("debug_topic", "cam_brick_detections/debug_image/compressed")
         self.declare_parameter("calibrate", False)
+        # Bricks kept per colour per frame, and published per colour. 1: the
+        # colour is the identity. More: identical bricks, told apart by place.
+        self.declare_parameter("max_per_colour", 1)
 
         self._read_parameters()
 
@@ -273,6 +294,11 @@ class BrickDetectNode(Node):
             + f", searched every {1.0 / max(self.process_rate, 0.5):.2f} s at "
             f"1/{self.process_scale:g} size, range from '{self.range_source}'"
             + (", image MIRRORED" if self.mirror else "")
+            + (
+                f", up to {self.max_per_colour} identical bricks per colour"
+                if self.max_per_colour > 1
+                else ", one brick per colour"
+            )
             + "."
         )
 
@@ -283,6 +309,9 @@ class BrickDetectNode(Node):
         self.camera_source = str(gp("camera_source").value)
         self.webcam_device = str(gp("webcam_device").value)
         self.camera_fps = float(gp("camera_fps").value)
+        self.exposure_mode = str(gp("exposure_mode").value)
+        self.exposure_ms = float(gp("exposure_ms").value)
+        self.exposure_keep_fps = bool(gp("exposure_keep_fps").value)
         self.camera_topic = str(gp("camera_topic").value)
         self.publish_frames = bool(gp("publish_frames").value)
         self.frames_topic = str(gp("frames_topic").value)
@@ -328,6 +357,7 @@ class BrickDetectNode(Node):
         self.debug_mode = bool(gp("debug_mode").value)
         self.debug_topic = str(gp("debug_topic").value)
         self.calibrate = bool(gp("calibrate").value)
+        self.max_per_colour = max(1, int(gp("max_per_colour").value))
 
     def _tracker_config(self):
         def track(name):
@@ -355,6 +385,14 @@ class BrickDetectNode(Node):
         capture.set(cv2.CAP_PROP_FPS, self.camera_fps)
         # Keep the newest frame, not a queue of old ones.
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # The webcam keeps whatever exposure the last node gave it.
+        camera_exposure.apply_and_log(
+            self.get_logger(),
+            self.webcam_device,
+            self.exposure_mode,
+            self.exposure_ms,
+            self.exposure_keep_fps,
+        )
         return capture
 
     def _capture_loop(self):
@@ -491,20 +529,35 @@ class BrickDetectNode(Node):
             mirror=self.mirror,
             open_kernel=self.open_kernel,
             prefer=self.range_source,
+            max_per_colour=self.max_per_colour,
         )
 
-        self._publish_boxes(accepted, stamp)
-        self._publish_located(accepted)
+        placed = self._place(accepted)
+        self._publish_boxes(accepted, placed, stamp)
+        if placed is not None:
+            self._publish_located(accepted, placed)
         if self.debug_pub is not None:
             self._publish_debug(small, scale, accepted, rejected, stamp)
         if self.calibrate:
             self._log_calibration(hsv, scale)
 
-    def _publish_boxes(self, accepted, stamp):
+    def _place(self, accepted):
+        """Return each candidate's map-frame Pose, or None without a transform."""
+        transform = self._map_transform()
+        if transform is None:
+            return None
+        placed = []
+        for candidate in accepted:
+            observation = candidate.observation
+            local = Pose(position=Point(x=observation.x, y=observation.y, z=observation.z))
+            placed.append(do_transform_pose(local, transform))
+        return placed
+
+    def _publish_boxes(self, accepted, placed, stamp):
         msg = Detection2DArray()
         msg.header.stamp = stamp.to_msg()
         msg.header.frame_id = self.frames_frame_id
-        for candidate in accepted:
+        for index, candidate in enumerate(accepted):
             blob = candidate.blob
             detection = Detection2D()
             detection.header = msg.header
@@ -516,6 +569,12 @@ class BrickDetectNode(Node):
             hypothesis = ObjectHypothesisWithPose()
             hypothesis.hypothesis.class_id = blob.colour
             hypothesis.hypothesis.score = float(candidate.score)
+            # Where the box was placed in the map, so identical bricks' boxes
+            # can be told apart; -1 is ROS's "not provided" for a covariance.
+            if placed is not None:
+                hypothesis.pose.pose.position = placed[index].position
+            else:
+                hypothesis.pose.covariance[0] = -1.0
             detection.results.append(hypothesis)
             msg.detections.append(detection)
         # Published even when empty: an empty frame is news to a tree that is
@@ -534,20 +593,16 @@ class BrickDetectNode(Node):
             )
             return None
 
-    def _publish_located(self, accepted):
-        transform = self._map_transform()
-        if transform is None:
-            return
+    def _publish_located(self, accepted, placed):
         by_colour = {}
-        for candidate in accepted:
-            observation = candidate.observation
-            local = Pose(position=Point(x=observation.x, y=observation.y, z=observation.z))
-            mapped = do_transform_pose(local, transform)
-            by_colour[candidate.blob.colour] = ball_locating.BallMeasurement(
-                x=mapped.position.x,
-                y=mapped.position.y,
-                z=mapped.position.z,
-                score=candidate.score,
+        for candidate, mapped in zip(accepted, placed):
+            by_colour.setdefault(candidate.blob.colour, []).append(
+                ball_locating.BallMeasurement(
+                    x=mapped.position.x,
+                    y=mapped.position.y,
+                    z=mapped.position.z,
+                    score=candidate.score,
+                )
             )
 
         now = self.get_clock().now()
@@ -555,38 +610,43 @@ class BrickDetectNode(Node):
         msg.header.stamp = now.to_msg()
         msg.header.frame_id = self.map_frame
         for name, tracker in self.trackers.items():
-            measurement = by_colour.get(name)
-            tracks = tracker.step(
-                [] if measurement is None else [measurement], now.nanoseconds * 1e-9
-            )
+            tracks = tracker.step(by_colour.get(name, []), now.nanoseconds * 1e-9)
             if not tracks:
                 continue
-            # One brick per colour: the most-seen track, should a bad range ever
-            # have started a second.
-            track = max(tracks, key=lambda t: t.hits)
-            x, y, z = track.position
-            detection = Detection3D()
-            detection.header = msg.header
-            detection.id = name
-            detection.bbox.center.position.x = x
-            detection.bbox.center.position.y = y
-            detection.bbox.center.position.z = z
-            detection.bbox.center.orientation.w = 1.0
-            size = self.geometry.diameter
-            detection.bbox.size.x = size
-            detection.bbox.size.y = size
-            detection.bbox.size.z = size
-            hypothesis = ObjectHypothesisWithPose()
-            hypothesis.hypothesis.class_id = name
-            hypothesis.hypothesis.score = float(track.score)
-            hypothesis.pose.pose.position.x = x
-            hypothesis.pose.pose.position.y = y
-            hypothesis.pose.pose.position.z = z
-            hypothesis.pose.pose.orientation.w = 1.0
-            detection.results.append(hypothesis)
-            msg.detections.append(detection)
+            if self.max_per_colour == 1:
+                # One brick per colour: the most-seen track, should a bad range
+                # ever have started a second.
+                tracks = [max(tracks, key=lambda t: t.hits)]
+            for track in tracks:
+                msg.detections.append(self._located(msg.header, name, track))
         if msg.detections:
             self.detections_pub.publish(msg)
+
+    def _located(self, header, name, track):
+        """Return one tracked brick as a Detection3D."""
+        x, y, z = track.position
+        detection = Detection3D()
+        detection.header = header
+        detection.id = (
+            name if self.max_per_colour == 1 else f"{name}/{track.ident}"
+        )
+        detection.bbox.center.position.x = x
+        detection.bbox.center.position.y = y
+        detection.bbox.center.position.z = z
+        detection.bbox.center.orientation.w = 1.0
+        size = self.geometry.diameter
+        detection.bbox.size.x = size
+        detection.bbox.size.y = size
+        detection.bbox.size.z = size
+        hypothesis = ObjectHypothesisWithPose()
+        hypothesis.hypothesis.class_id = name
+        hypothesis.hypothesis.score = float(track.score)
+        hypothesis.pose.pose.position.x = x
+        hypothesis.pose.pose.position.y = y
+        hypothesis.pose.pose.position.z = z
+        hypothesis.pose.pose.orientation.w = 1.0
+        detection.results.append(hypothesis)
+        return detection
 
     # --- seeing what it saw ----------------------------------------------------
 
