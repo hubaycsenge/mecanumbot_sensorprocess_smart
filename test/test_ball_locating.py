@@ -33,6 +33,7 @@ from mecanumbot_sensorprocess_smart.ball_locating import (
     locate,
     range_from_ground,
     range_from_size,
+    unclipped_box,
 )
 
 HD = CameraModel(width=1280.0, height=720.0, hfov=math.radians(60.0))
@@ -431,3 +432,42 @@ def test_height_is_smoothed_but_never_extrapolated():
     tracker.step([BallMeasurement(1.0, 0.0, 1.03)], 0.1)
     coasted = tracker.step([], 0.2)
     assert coasted[0].position[2] == pytest.approx(0.53, abs=1e-6)
+
+
+# --- a ball cut off by the frame edge ----------------------------------------
+
+
+def test_a_ball_cut_off_by_the_bottom_edge_is_centred_from_its_top_edge():
+    # The box seen on the robot on 2026-11-24 with the head at its lowest:
+    # 324 px wide, 272 tall, its bottom on the frame's last row.
+    u, v, w, h = unclipped_box((659.0, 584.0, 324.0, 272.0), 1280.0, 720.0)
+    assert (u, w, h) == (659.0, 324.0, 324.0)
+    assert v == pytest.approx(584.0 - 136.0 + 162.0)
+
+
+def test_a_ball_cut_off_by_a_side_edge_is_centred_from_its_inner_edge():
+    u, v, _, _ = unclipped_box((1240.0, 300.0, 80.0, 120.0), 1280.0, 720.0)
+    assert v == 300.0
+    assert u == pytest.approx(1200.0 + 60.0)
+
+
+def test_a_whole_ball_and_a_ball_bigger_than_the_frame_are_left_alone():
+    assert unclipped_box((640.0, 360.0, 100.0, 98.0), 1280.0, 720.0) == (
+        640.0, 360.0, 100.0, 98.0,
+    )
+    # Touches top and bottom: there is no uncut edge to rebuild from.
+    assert unclipped_box((640.0, 360.0, 800.0, 720.0), 1280.0, 720.0) == (
+        640.0, 360.0, 800.0, 720.0,
+    )
+
+
+def test_a_ball_cut_off_at_the_bottom_is_placed_nearer_than_its_box_centre_says():
+    """The cut-off centre is too high, so it read as further out along the floor."""
+    tilted = geometry(camera_pitch=math.radians(-30.0))
+    clipped = (640.0, 720.0 - 60.0, 200.0, 120.0)
+    whole = (640.0, 720.0 - 120.0 + 100.0, 200.0, 200.0)
+    a = locate(HD, clipped, tilted)
+    b = locate(HD, whole, tilted)
+    assert a is not None and b is not None
+    assert a.x == pytest.approx(b.x)
+    assert a.range == pytest.approx(b.range)

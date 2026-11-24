@@ -339,6 +339,41 @@ def floor_pitch(camera, box, geometry):
     return math.asin(ratio) - math.atan2(b, a)
 
 
+def unclipped_box(box, width, height, margin=2.0):
+    """
+    Return `box` with its centre rebuilt where the frame edge has cut it off.
+
+    A ball is round, so its box is square, and a box that touches a frame edge
+    and is shorter across that edge than along it has lost the part beyond the
+    edge. The edge it does not touch is still the ball's real edge, and the
+    uncut dimension is still its real diameter, so the centre is that edge plus
+    half the diameter. Without this the centre of a ball cut off by the bottom
+    of the frame -- every ball close to the robot when the head cannot tilt
+    lower -- sits too high, and the ball is placed further out than it is.
+
+    `box` is `(centre_u, centre_v, width_px, height_px)`; the size is returned
+    as the uncut diameter in both dimensions. A box clipped on both opposite
+    edges, or not clipped at all, is returned unchanged.
+    """
+    u, v, w, h = (float(x) for x in box)
+    diameter = max(w, h)
+    left, right = u - w / 2.0, u + w / 2.0
+    top, bottom = v - h / 2.0, v + h / 2.0
+    at_left, at_right = left <= margin, right >= float(width) - margin
+    at_top, at_bottom = top <= margin, bottom >= float(height) - margin
+    if h < diameter and at_bottom and not at_top:
+        v = top + diameter / 2.0
+    elif h < diameter and at_top and not at_bottom:
+        v = bottom - diameter / 2.0
+    if w < diameter and at_right and not at_left:
+        u = left + diameter / 2.0
+    elif w < diameter and at_left and not at_right:
+        u = right - diameter / 2.0
+    if (u, v) == (float(box[0]), float(box[1])):
+        return tuple(float(x) for x in box)
+    return (u, v, diameter, diameter)
+
+
 def locate(camera, box, geometry, score=0.0, prefer=SOURCE_SIZE):
     """
     Place one ball box in the robot's base frame, or return None.
@@ -353,7 +388,11 @@ def locate(camera, box, geometry, score=0.0, prefer=SOURCE_SIZE):
     project is not evidence about where anything is -- and it is why the fusion
     node can publish nothing rather than publishing a guess.
     """
-    centre_u, centre_v, width_px, height_px = box
+    # A ball cut off by the frame edge is placed from its uncut edge and
+    # diameter, not from the centre of what is left of it.
+    centre_u, centre_v, width_px, height_px = unclipped_box(
+        box, camera.width, camera.height
+    )
     unit, bearing, elevation = direction(camera, centre_u, centre_v, geometry.camera_pitch)
 
     size_range = range_from_size(camera, width_px, height_px, geometry.diameter)
