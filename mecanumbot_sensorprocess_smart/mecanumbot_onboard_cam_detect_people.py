@@ -126,6 +126,10 @@ class DeepStreamPersonDetectNode(Node):
                 ("detection_gate.min_valid_keypoints_retain", 1),
                 ("detection_gate.min_box_height", 40.0),
                 ("detection_gate.max_box_aspect_ratio", 3.5),
+                # ---- a head over an occluder (see GateConfig.head_*) ----
+                ("detection_gate.head_keypoint_conf", 0.9),
+                ("detection_gate.head_min_keypoints", 0),
+                ("detection_gate.head_box_conf_floor", 0.2),
                 # ---- the close_range label: the box runs off the top ----
                 ("detection_gate.proximity_enabled", True),
                 ("detection_gate.proximity_min_height_fraction", 0.6),
@@ -430,6 +434,9 @@ class DeepStreamPersonDetectNode(Node):
             min_valid_keypoints_retain=int(gate("min_valid_keypoints_retain")),
             min_box_height=float(gate("min_box_height")),
             max_box_aspect_ratio=float(gate("max_box_aspect_ratio")),
+            head_keypoint_conf=float(gate("head_keypoint_conf")),
+            head_min_keypoints=int(gate("head_min_keypoints")),
+            head_box_conf_floor=float(gate("head_box_conf_floor")),
             proximity_enabled=bool(gate("proximity_enabled")),
             proximity_min_height_fraction=float(gate("proximity_min_height_fraction")),
             proximity_top_margin=float(gate("proximity_top_margin")),

@@ -170,7 +170,7 @@ class PersonLocateNode(Node):
         self.declare_parameter("tracking.camera_half_fov_deg", 30.0)
         self.declare_parameter("tracking.max_blind_zone_time", 30.0)
         self.declare_parameter("tracking.blind_zone_min_hits", 5)
-        self.declare_parameter("tracking.blind_zone_creates_tracks", True)
+        self.declare_parameter("tracking.blind_zone_creates_tracks", False)
 
         # ---- the camera, as this node has to model it ----
         # The pose detector publishes bearings, having done the image -> angle

@@ -137,6 +137,19 @@ class GateConfig:
     # run). A close-range box has to clear the acquire gate in every frame.
     close_range_retain: bool = False
 
+    # Stage 1, an exception to the box gate: a person seen only as a head over
+    # an occluder. The network scores a box that is mostly hidden low even when
+    # it is sure of the face -- a participant behind a blue panel at 3.2 m came
+    # out at box 0.32 with nose and eyes at 0.97-0.99 and was refused at the
+    # box gate (stress session of 2026-11-25, t=214 s). A detection that fails
+    # only on box confidence passes if at least `head_min_keypoints` of the
+    # five face joints are at or above `head_keypoint_conf` and the box is
+    # still above `head_box_conf_floor`. Every other check, and the temporal
+    # confirmation below, still applies. `head_min_keypoints` 0 switches it off.
+    head_keypoint_conf: float = 0.9
+    head_min_keypoints: int = 0
+    head_box_conf_floor: float = 0.2
+
     # Stage 3: temporal confirmation.
     min_hits: int = 2
     max_missed_time: float = 0.5
@@ -159,6 +172,8 @@ class PoseEvidence:
     box_height: float
     box_top: float = 0.0
     image_height: float = 0.0
+    # Face joints (nose, eyes, ears) at or above `GateConfig.head_keypoint_conf`.
+    confident_face_keypoints: int = 0
 
     @property
     def aspect_ratio(self):
@@ -210,6 +225,14 @@ def evaluate_evidence(
         if confidence > cfg.keypoint_conf:
             valid += 1
 
+    confident_face = 0
+    for index in (NOSE, LEFT_EYE, RIGHT_EYE, LEFT_EAR, RIGHT_EAR):
+        if index >= len(keypoints):
+            continue
+        confidence = float(keypoints[index][0])
+        if math.isfinite(confidence) and confidence >= cfg.head_keypoint_conf:
+            confident_face += 1
+
     return PoseEvidence(
         box_confidence=float(box_confidence),
         valid_keypoints=valid,
@@ -218,6 +241,7 @@ def evaluate_evidence(
         box_height=float(box_height),
         box_top=float(box_top),
         image_height=float(image_height),
+        confident_face_keypoints=confident_face,
     )
 
 
@@ -326,8 +350,11 @@ def check_evidence(evidence, cfg, strict):
         best_conf = cfg.best_keypoint_conf_retain
         min_valid = cfg.min_valid_keypoints_retain
 
+    head_only = False
     if evidence.box_confidence <= box_conf:
-        return False, f"box-conf {evidence.box_confidence:.2f}<={box_conf:.2f}"
+        if not head_seen_over_occluder(evidence, cfg):
+            return False, f"box-conf {evidence.box_confidence:.2f}<={box_conf:.2f}"
+        head_only = True
     if evidence.box_height < cfg.min_box_height:
         return False, f"box-height {evidence.box_height:.0f}px"
     if evidence.aspect_ratio > cfg.max_box_aspect_ratio:
@@ -339,7 +366,22 @@ def check_evidence(evidence, cfg, strict):
             False,
             f"weak-pose {evidence.best_keypoint_conf:.2f}<{best_conf:.2f}",
         )
-    return True, "ok"
+    return True, "ok-head" if head_only else "ok"
+
+
+def head_seen_over_occluder(evidence, cfg):
+    """
+    Say whether a box too weak for the box gate is a confidently seen head.
+
+    The exception to the box gate described at `GateConfig.head_min_keypoints`:
+    enough face joints at or above `head_keypoint_conf`, and a box still above
+    `head_box_conf_floor`. Off when `head_min_keypoints` is 0.
+    """
+    if cfg.head_min_keypoints <= 0:
+        return False
+    if evidence.box_confidence <= cfg.head_box_conf_floor:
+        return False
+    return evidence.confident_face_keypoints >= cfg.head_min_keypoints
 
 
 def iou(a, b):
