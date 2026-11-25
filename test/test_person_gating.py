@@ -454,3 +454,61 @@ def test_missing_joints_as_zeros_do_not_count():
 
 def test_no_frame_height_no_cue():
     assert head_at_bottom(_face(690.0), 0.0) is None
+
+
+class TestHeadOverAnOccluder:
+    """A head seen over a panel passes the box gate on its face joints alone."""
+
+    ON = GateConfig(head_min_keypoints=3)
+    # 2026-11-25, t=214 s: box 0.32, nose and eyes 0.97-0.99, an ear at 0.47
+    PEEKING = {NOSE: 0.97, LEFT_EYE: 0.97, RIGHT_EYE: 0.99, LEFT_EAR: 0.47}
+    HEAD_BOX = (300.0, 100.0, 380.0, 180.0)
+
+    def evidence(self, joints, box_conf, cfg):
+        box = self.HEAD_BOX
+        return evaluate_evidence(
+            joints_keypoints(joints), box_conf, box[2] - box[0], box[3] - box[1], cfg
+        )
+
+    def test_off_by_default(self):
+        ev = self.evidence(self.PEEKING, 0.32, CONFIG)
+        passed, reason = check_evidence(ev, CONFIG, strict=True)
+        assert not passed and reason.startswith("box-conf")
+
+    def test_the_peeking_participant_passes(self):
+        ev = self.evidence(self.PEEKING, 0.32, self.ON)
+        assert ev.confident_face_keypoints == 3
+        assert check_evidence(ev, self.ON, strict=True) == (True, "ok-head")
+
+    def test_two_confident_face_joints_are_not_enough(self):
+        joints = {NOSE: 0.97, LEFT_EYE: 0.95, RIGHT_EYE: 0.6}
+        ev = self.evidence(joints, 0.32, self.ON)
+        assert not check_evidence(ev, self.ON, strict=True)[0]
+
+    def test_a_merely_likely_face_is_not_enough(self):
+        joints = {NOSE: 0.85, LEFT_EYE: 0.85, RIGHT_EYE: 0.85, LEFT_EAR: 0.85}
+        ev = self.evidence(joints, 0.32, self.ON)
+        assert not check_evidence(ev, self.ON, strict=True)[0]
+
+    def test_a_box_below_the_floor_still_fails(self):
+        ev = self.evidence(self.PEEKING, 0.15, self.ON)
+        passed, reason = check_evidence(ev, self.ON, strict=True)
+        assert not passed and reason.startswith("box-conf")
+
+    def test_the_other_checks_still_apply(self):
+        tiny = evaluate_evidence(joints_keypoints(self.PEEKING), 0.32, 20.0, 20.0, self.ON)
+        passed, reason = check_evidence(tiny, self.ON, strict=True)
+        assert not passed and reason.startswith("box-height")
+
+    def test_a_strong_box_reports_plain_ok(self):
+        ev = self.evidence(self.PEEKING, 0.8, self.ON)
+        assert check_evidence(ev, self.ON, strict=True) == (True, "ok")
+
+    def test_it_still_needs_two_frames(self):
+        confirmer = DetectionConfirmer(self.ON)
+        box = self.HEAD_BOX
+        ev = self.evidence(self.PEEKING, 0.32, self.ON)
+        first = confirmer.update([(box, ev)], 0.0)
+        assert first[0] == (False, "unconfirmed 1/2")
+        second = confirmer.update([(box, ev)], 0.1)
+        assert second[0] == (True, "ok-head")

@@ -202,6 +202,15 @@
       # fill the frame overlap past iou_threshold, and a confirmed person kept
       # every blurred shelf after it "confirmed" at 0.34 (2026-10-21).
       close_range_retain: false
+      # A person seen only as a head over an occluder (2026-11-25): a detection
+      # that fails ONLY the box gate passes if >= head_min_keypoints of the five
+      # face joints are >= head_keypoint_conf and the box is > head_box_conf_floor.
+      # The participant behind a panel at 3.2 m scored box 0.32 with nose and eyes
+      # at 0.97-0.99 and was refused. Temporal confirmation still applies; the
+      # fusion still needs a LiDAR range for it. 0 switches it off.
+      head_keypoint_conf: 0.9
+      head_min_keypoints: 3
+      head_box_conf_floor: 0.2
       # Temporal confirmation: frames a blob must pass the acquire gate before
       # it is published, and how long a confirmed track survives without one.
       min_hits: 2
