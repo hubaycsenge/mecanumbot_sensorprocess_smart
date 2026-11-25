@@ -406,7 +406,12 @@
       blind_zone_min_hits: 5
       # false keeps the original rule -- only the camera introduces a person --
       # while still holding the corroboration clock for existing tracks.
-      blind_zone_creates_tracks: true
+      # false since 2026-11-25: with it true (from 2026-09-08) the LiDAR alone
+      # turned a leg of the green cage 0.37 m in front of the robot into a
+      # "person" with no camera detection at all, and the leading tree walked
+      # up to it (rosbag2_2026_11_25-09_11_54, t=274). A human who is already
+      # tracked still stays tracked through the blind zone on the LiDAR.
+      blind_zone_creates_tracks: false
 
     # ==========================================================================
     # The camera, as this node has to model it
